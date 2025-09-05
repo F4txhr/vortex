@@ -1,175 +1,383 @@
-/*
-  🌪️ VortexVpn — Dynamic Proxy Bank
-  - Ambil proxy list dari GitHub (proxyList.txt)
-  - Cache 5 menit menggunakan Cloudflare Cache API
-  - Generate Link & Subscription
-  - Health check untuk cek proxy hidup/mati
-  - /raw untuk ambil list mentah
-*/
+import { connect } from "cloudflare:sockets";
 
-const SOURCE_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt";
+// =================================
+// Configuration
+// =================================
+// For now, we keep configuration minimal.
+// In a real-world scenario, these might come from environment variables.
 
+// =================================
+// Main Fetch Handler
+// =================================
 export default {
-  async fetch(req) {
-    const url = new URL(req.url);
+  async fetch(request, env, ctx) {
+    // We only handle WebSocket upgrade requests.
+    const upgradeHeader = request.headers.get("Upgrade");
+    if (upgradeHeader !== "websocket") {
+      return new Response("Expected a WebSocket request.", { status: 426 });
+    }
 
-    if (url.pathname === "/") return landing();
-    if (url.pathname === "/sub") return subscription();
-    if (url.pathname === "/link") return links(url);
-    if (url.pathname === "/health") return healthCheck();
-    if (url.pathname === "/raw") return rawList();
-
-    return new Response("Not Found", { status: 404 });
+    // The core logic is delegated to the websocketHandler.
+    return websocketHandler(request);
   }
 };
 
-// 🔹 Ambil daftar proxy dari GitHub (dengan cache 5 menit menggunakan Cache API)
-async function fetchProxyList() {
-  const cache = caches.default;
-  const cacheKey = new Request(SOURCE_URL);
+// =================================
+// WebSocket Handler
+// =================================
+async function websocketHandler(request) {
+  const webSocketPair = new WebSocketPair();
+  const [client, server] = Object.values(webSocketPair);
 
-  let response = await cache.match(cacheKey);
+  // The server-side WebSocket is the one we work with.
+  server.accept();
+  console.log("WebSocket connection accepted.");
 
-  if (!response) {
-    // Jika tidak ada di cache, fetch dari sumber
-    const sourceResponse = await fetch(SOURCE_URL, { cf: { cacheTtl: 0 } }); // Biarkan kita yang mengontrol cache
+  // Pass the server-side socket to the stream handler.
+  handleWebSocketStream(server);
 
-    // Buat response baru dengan header cache
-    response = new Response(sourceResponse.body, sourceResponse);
-    response.headers.set("Cache-Control", "s-maxage=300"); // Cache selama 5 menit (300 detik)
-
-    // Simpan ke cache. Awaiting this ensures the cache is written.
-    await cache.put(cacheKey, response.clone());
-  }
-
-  const text = await response.text();
-  return text.split("\n").map(l => l.trim()).filter(Boolean);
-}
-
-// 🔹 Landing page HTML
-async function landing() {
-  const list = await fetchProxyList();
-  const rows = list.map((line, i) => `<tr><td>${i+1}</td><td><code>${line}</code></td></tr>`).join("");
-
-  const html = `<!doctype html>
-  <html lang="id">
-  <head>
-    <meta charset="utf-8" />
-    <title>🌪️ VortexVpn</title>
-    <style>
-      body{font-family:system-ui;background:#0b1020;color:#e7e9ee;padding:20px}
-      table{width:100%;border-collapse:collapse;margin-top:20px}
-      th,td{padding:8px 12px;border:1px solid #333;text-align:left}
-      code{font-size:0.85em;color:#cde3ff}
-      a.btn{display:inline-block;padding:8px 12px;margin-top:10px;border:1px solid #39507f;border-radius:8px;color:#e7e9ee;text-decoration:none}
-    </style>
-  </head>
-  <body>
-    <h1>🌪️ VortexVpn</h1>
-    <p>Proxy list otomatis dari GitHub — optimized for Indonesia.</p>
-    <a class="btn" href="/sub">Subscription API</a>
-    <a class="btn" href="/health">Cek Health</a>
-    <a class="btn" href="/raw">Raw List</a>
-    <table>
-      <thead><tr><th>No</th><th>Proxy</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-  </body>
-  </html>`;
-  return new Response(html, { headers: { "content-type": "text/html;charset=utf-8" } });
-}
-
-// 🔹 Subscription (Base64)
-async function subscription() {
-  const list = await fetchProxyList();
-  const data = btoa(unescape(encodeURIComponent(list.join("\n"))));
-  return new Response(data, {
-    headers: {
-      "content-type": "text/plain; charset=utf-8",
-      "profile-update-interval": "6h",
-      "subscription-userinfo": `upload=0; download=0; total=0; expire=${Math.floor(Date.now()/1000)+30*86400}`,
-    },
+  // Return the client-side socket to the browser to establish the connection.
+  return new Response(null, {
+    status: 101,
+    webSocket: client,
   });
 }
 
-// 🔹 Ambil link tertentu
-async function links(url) {
-  const list = await fetchProxyList();
-  const idStr = url.searchParams.get("id");
+// =================================
+// Stream and Protocol Logic
+// =================================
+function handleWebSocketStream(server) {
+  let remoteSocket = null;
+  let remoteSocketWriter = null;
 
-  if (!idStr) {
-    // Jika tidak ada id, kembalikan semua link
-    return new Response(list.join("\n"), { headers: { "content-type": "text/plain; charset=utf-8" } });
-  }
-
-  const id = parseInt(idStr, 10);
-
-  if (isNaN(id) || id < 1) {
-    return new Response("Error: Invalid ID parameter. ID must be a positive integer.", { status: 400 });
-  }
-
-  if (id > list.length) {
-    return new Response(`Error: Invalid ID. ID must be between 1 and ${list.length}.`, { status: 404 });
-  }
-
-  const selected = list[id - 1];
-  return new Response(selected, { headers: { "content-type": "text/plain; charset=utf-8" } });
-}
-
-// 🔹 Cek proxy health (max 10 biar cepat)
-// Catatan: Pengecekan ini terbatas karena limitasi platform Cloudflare.
-// Hanya port HTTPS standar (443, 2053, 2083, 2087, 2096, 8443) yang bisa dites.
-async function healthCheck() {
-  const list = await fetchProxyList();
-  const results = [];
-  const ALLOWED_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
-
-  // Jalankan pengecekan secara paralel untuk kecepatan
-  const promises = list.slice(0, 10).map(async (line) => {
-    let status = "untested";
-    try {
-      const u = new URL(line);
-      // Fallback ke port 443 jika tidak ada port spesifik
-      const port = parseInt(u.port || "443", 10);
-
-      if (ALLOWED_PORTS.includes(port)) {
-        // Hanya coba fetch jika port diizinkan
-        const res = await fetch(`https://${u.hostname}:${port}`, {
-          method: "HEAD",
-          redirect: "manual",
-          signal: AbortSignal.timeout(4000), // Tambah timeout 4 detik
-          cf: { cacheTtl: 0 }
-        });
-        status = res.status;
-      } else {
-        status = `unsupported_port (${u.port})`;
+  server.readable.pipeTo(new WritableStream({
+    async write(chunk, controller) {
+      // If the remote socket writer is already set up, it means we are in "relay" mode.
+      if (remoteSocketWriter) {
+        await remoteSocketWriter.write(chunk);
+        return;
       }
-    } catch (e) {
-      // Tangkap error seperti timeout atau koneksi gagal
-      status = "dead";
-    }
-    return { proxy: line, status: status };
-  });
 
-  const settledResults = await Promise.allSettled(promises);
-  settledResults.forEach(res => {
-    if(res.status === 'fulfilled') {
-      results.push(res.value);
-    } else {
-      // Should not happen with the current logic, but as a fallback
-      results.push({ proxy: 'unknown', status: 'check_failed' });
-    }
-  });
+      // This is the first chunk. Parse the header and establish the connection.
+      const { destination, remainingData, error } = parseRequestHeader(chunk);
 
-  return new Response(JSON.stringify(results, null, 2), {
-    headers: { "content-type": "application/json" }
+      if (error) {
+        console.error("Failed to parse request header:", error);
+        server.close(1002, error);
+        return;
+      }
+
+      // Establish the TCP connection to the destination.
+      const connectionResult = await handleTCPOutbound(destination, server);
+
+      if (!connectionResult) {
+        // The handleTCPOutbound function will have already closed the client socket.
+        return;
+      }
+
+      remoteSocket = connectionResult.socket;
+      remoteSocketWriter = connectionResult.writer;
+
+      // If there's any data left from the first chunk after the header,
+      // write it to the remote socket.
+      if (remainingData && remainingData.byteLength > 0) {
+        await remoteSocketWriter.write(remainingData);
+      }
+    },
+    close() {
+      console.log("Client WebSocket stream closed.");
+      if (remoteSocket) {
+        console.log("Closing remote TCP socket.");
+        remoteSocket.close();
+      }
+    },
+    abort(reason) {
+      console.error("Client WebSocket stream aborted:", reason);
+      if (remoteSocket) {
+        console.log("Aborting remote TCP socket.");
+        remoteSocket.abort();
+      }
+    },
+  })).catch(err => {
+    console.error("Error piping WebSocket stream:", err);
+    if (remoteSocket) {
+      remoteSocket.abort();
+    }
   });
 }
 
-// 🔹 Raw proxy list (mentah)
-async function rawList() {
-  const list = await fetchProxyList();
-  return new Response(list.join("\n"), {
-    headers: { "content-type": "text/plain; charset=utf-8" }
-  });
+// =================================
+// Protocol Parsers
+// =================================
+
+/**
+ * A unified function to sniff and parse the protocol header from the client.
+ * @param {ArrayBuffer} chunk The first data chunk from the client.
+ * @returns {object} An object containing destination, remainingData, and error.
+ */
+function parseRequestHeader(chunk) {
+  const dataView = new DataView(chunk);
+
+  // The order of these checks is important. VLESS and Trojan have more
+  // specific and longer signatures than Shadowsocks. Shadowsocks is the most
+  // generic and should be checked last to avoid false positives.
+
+  // VLESS check: First byte is protocol version, followed by 16-byte UUID.
+  if (chunk.byteLength > 17) {
+    const vlessResult = parseVlessHeader(chunk);
+    if (!vlessResult.error) {
+        console.log("Detected VLESS protocol.");
+        return vlessResult;
+    }
+  }
+
+  // Trojan check: 56 bytes of hex-encoded password, CRLF, SOCKS5-like request.
+  if (chunk.byteLength > 58) {
+      const trojanResult = parseTrojanHeader(chunk);
+      if (!trojanResult.error) {
+          console.log("Detected Trojan protocol.");
+          return trojanResult;
+      }
+  }
+
+  // Shadowsocks check: Starts with a SOCKS5-like address type.
+  if (chunk.byteLength > 4) {
+    const ssResult = parseShadowsocksHeader(chunk);
+    if (!ssResult.error) {
+      console.log("Detected Shadowsocks protocol.");
+      return ssResult;
+    }
+  }
+
+  return { error: "Could not determine protocol." };
+}
+
+/**
+ * Parses a VLESS protocol header.
+ * @param {ArrayBuffer} buffer The client's initial data packet.
+ * @returns {object} Destination info or an error.
+ */
+function parseVlessHeader(buffer) {
+    try {
+        const dataView = new DataView(buffer);
+        // const version = dataView.getUint8(0); // Typically 0
+        // const uuid = buffer.slice(1, 17); // 16-byte UUID
+
+        // Add-ons length
+        const addOnLength = dataView.getUint8(17);
+        let offset = 18 + addOnLength;
+
+        // Command (1 = TCP, 2 = UDP)
+        const command = dataView.getUint8(offset);
+        if (command !== 1) return { error: "Only TCP connections are supported." };
+        offset += 1;
+
+        const port = dataView.getUint16(offset);
+        offset += 2;
+
+        const addressType = dataView.getUint8(offset);
+        offset += 1;
+
+        let address = '';
+        let addressLength = 0;
+
+        switch (addressType) {
+            case 1: // IPv4
+                addressLength = 4;
+                address = new Uint8Array(buffer.slice(offset, offset + addressLength)).join('.');
+                break;
+            case 2: // Domain
+                addressLength = dataView.getUint8(offset);
+                offset += 1;
+                address = new TextDecoder().decode(buffer.slice(offset, offset + addressLength));
+                break;
+            case 3: // IPv6
+                addressLength = 16;
+                const ipv6 = [];
+                for (let i = 0; i < 8; i++) {
+                    ipv6.push(dataView.getUint16(offset + i * 2).toString(16));
+                }
+                address = ipv6.join(':');
+                break;
+            default:
+                return { error: `Invalid VLESS address type: ${addressType}` };
+        }
+
+        offset += addressLength;
+
+        return {
+            destination: { address, port },
+            remainingData: buffer.slice(offset)
+        };
+    } catch (err) {
+        return { error: `VLESS parsing failed: ${err.message}` };
+    }
+}
+
+/**
+ * Parses a Trojan protocol header.
+ * @param {ArrayBuffer} buffer The client's initial data packet.
+ * @returns {object} Destination info or an error.
+ */
+function parseTrojanHeader(buffer) {
+    try {
+        const dataView = new DataView(buffer);
+        // Trojan request format:
+        // 56 bytes hex password + CRLF (\r\n) + SOCKS5-like request
+        const passwordHex = new TextDecoder().decode(buffer.slice(0, 56));
+        const crlf = new TextDecoder().decode(buffer.slice(56, 58));
+        if (crlf !== '\r\n') return { error: "Invalid Trojan header (CRLF not found)." };
+
+        let offset = 58;
+        const command = dataView.getUint8(offset); // 1 = TCP, 3 = UDP
+        if (command !== 1) return { error: "Only TCP connections are supported." };
+        offset += 1;
+
+        const addressType = dataView.getUint8(offset);
+        offset += 1;
+
+        let address = '';
+        let addressLength = 0;
+
+        switch (addressType) {
+            case 1: // IPv4
+                addressLength = 4;
+                address = new Uint8Array(buffer.slice(offset, offset + addressLength)).join('.');
+                break;
+            case 3: // Domain
+                addressLength = dataView.getUint8(offset);
+                offset += 1;
+                address = new TextDecoder().decode(buffer.slice(offset, offset + addressLength));
+                break;
+            case 4: // IPv6
+                addressLength = 16;
+                const ipv6 = [];
+                for (let i = 0; i < 8; i++) {
+                    ipv6.push(dataView.getUint16(offset + i * 2).toString(16));
+                }
+                address = ipv6.join(':');
+                break;
+            default:
+                return { error: `Invalid Trojan address type: ${addressType}` };
+        }
+
+        offset += addressLength;
+        const port = dataView.getUint16(offset);
+        offset += 2;
+
+        // There might be another CRLF at the end of the header
+        // For simplicity, we assume the rest is payload
+        offset += 2; // Skipping final CRLF
+
+        return {
+            destination: { address, port },
+            remainingData: buffer.slice(offset)
+        };
+    } catch (err) {
+        return { error: `Trojan parsing failed: ${err.message}` };
+    }
+}
+
+/**
+ * Parses a Shadowsocks protocol header.
+ * @param {ArrayBuffer} buffer The client's initial data packet.
+ * @returns {object} Destination info or an error.
+ */
+function parseShadowsocksHeader(buffer) {
+    try {
+        const dataView = new DataView(buffer);
+        let offset = 0;
+        const addressType = dataView.getUint8(offset);
+        offset += 1;
+
+        let address = '';
+        let addressLength = 0;
+
+        switch (addressType) {
+            case 1: // IPv4
+                addressLength = 4;
+                address = new Uint8Array(buffer.slice(offset, offset + addressLength)).join('.');
+                break;
+            case 3: // Domain
+                addressLength = dataView.getUint8(offset);
+                offset += 1;
+                address = new TextDecoder().decode(buffer.slice(offset, offset + addressLength));
+                break;
+            case 4: // IPv6
+                addressLength = 16;
+                const ipv6 = [];
+                for (let i = 0; i < 8; i++) {
+                    ipv6.push(dataView.getUint16(offset + i * 2).toString(16));
+                }
+                address = ipv6.join(':');
+                break;
+            default:
+                return { error: `Invalid Shadowsocks address type: ${addressType}` };
+        }
+
+        offset += addressLength;
+        const port = dataView.getUint16(offset);
+        offset += 2;
+
+        return {
+            destination: { address, port },
+            remainingData: buffer.slice(offset)
+        };
+    } catch (err) {
+        return { error: `Shadowsocks parsing failed: ${err.message}` };
+    }
+}
+
+function parseVmessHeader(chunk) {
+  // TODO: Implement VMess header parsing
+  return { error: 'VMess protocol is not yet supported.' };
+}
+
+// =================================
+// TCP Outbound Logic
+// =================================
+/**
+ * Establishes a TCP connection to the destination and relays data.
+ * @param {object} destination The destination address and port.
+ * @param {WebSocket} clientSocket The server-side WebSocket from the client.
+ * @returns {object|null} An object with the remote socket and its writer, or null on failure.
+ */
+async function handleTCPOutbound(destination, clientSocket) {
+  try {
+    // Connect to the destination using TCP sockets API
+    const remoteSocket = connect({
+      hostname: destination.address,
+      port: destination.port,
+    });
+
+    // Pipe data from the remote TCP socket back to the client's WebSocket
+    remoteSocket.readable.pipeTo(new WritableStream({
+      async write(chunk) {
+        // The readyState for a WebSocket is 1 for OPEN.
+        if (clientSocket.readyState === 1) {
+          clientSocket.send(chunk);
+        }
+      },
+      close() {
+        console.log("Remote TCP socket readable stream closed.");
+      },
+      abort(reason) {
+        console.error("Remote TCP socket readable stream aborted:", reason);
+      },
+    })).catch(err => {
+      console.error("Error piping remote readable to client writable:", err.message);
+    });
+
+    // Return the writer for the remote socket's writable stream.
+    // This allows the client-to-remote pipe to be set up.
+    return {
+      writer: remoteSocket.writable.getWriter(),
+      socket: remoteSocket,
+    };
+
+  } catch (error) {
+    console.error(`Connection to ${destination.address}:${destination.port} failed:`, error.message);
+    clientSocket.close(1011, `Could not connect to destination.`);
+    return null;
+  }
 }
