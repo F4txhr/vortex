@@ -313,7 +313,13 @@ async function connectToBackend(host, port, CONF) {
   // Coba resolve via DoH jika host bukan IP
   let target = host;
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(host) && !host.includes(':')) {
-    try { const ip = await dohResolveA(host, CONF.DOH_URL; if (ip) target = ip; } catch(e){}
+    try {
+          const ip = await dohResolveA(host, CONF.DOH_URL);
+          if (ip) target = ip;
+        } catch (err) {
+  // optional: log error atau biarin kosong
+}
+
   }
   // Menggunakan API connect() (Workers TCP sockets)
   // @ts-ignore - environment yang mendukung harus menyediakan connect()
