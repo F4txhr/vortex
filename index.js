@@ -1,64 +1,54 @@
 /*
-  🌪️ VortexVpn — Serverless V2Ray Tunnel (Cloudflare Workers)
-  Bahasa Indonesia | Multi-node proxy bank + Subscription API
-
-  Endpoint:
-    /        -> Landing (dashboard list proxy)
-    /link    -> Generate shareable links (single node / semua node)
-    /sub     -> Subscription (v2ray/Clash-compatible base64 list)
-
-  ⚠️ Catatan:
-  - Fokus utama: VLESS & Trojan via WebSocket
-  - UDP tidak didukung (batasan Workers)
-  - PROXIES bisa diganti dengan KV/DO untuk dinamis
+  🌪️ VortexVpn — Dynamic Proxy Bank
+  - Ambil proxy list dari GitHub (proxyList.txt)
+  - Cache 5 menit di memory Worker
+  - Generate Link & Subscription
+  - Health check untuk cek proxy hidup/mati
+  - /raw untuk ambil list mentah
 */
 
-const CONF = {
-  DOH_URL: "https://cloudflare-dns.com/dns-query",
-};
+const SOURCE_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt";
 
-const PROXIES = [
-  {
-    id: "sg1",
-    type: "vless",
-    uuid: "11111111-1111-1111-1111-111111111111",
-    host: "sg1.proxy.net",
-    path: "/vless",
-    isp: "SingTel",
-    location: "Singapore",
-    latency: 35,
-  },
-  {
-    id: "id1",
-    type: "trojan",
-    psk: "changeme-trojan",
-    host: "id1.proxy.net",
-    path: "/trojan",
-    isp: "IndiHome",
-    location: "Jakarta",
-    latency: 12,
-  },
-];
+// cache in-memory (bertahan selama Worker instance hidup ± beberapa menit)
+let CACHE = {
+  proxies: [],
+  updatedAt: 0
+};
 
 export default {
-  async fetch(req, env, ctx) {
+  async fetch(req) {
     const url = new URL(req.url);
 
-    if (url.pathname === "/") return landing(req);
-    if (url.pathname === "/link") return links(req, url);
-    if (url.pathname === "/sub") return subscription(req, url);
+    if (url.pathname === "/") return landing();
+    if (url.pathname === "/sub") return subscription();
+    if (url.pathname === "/link") return links(url);
+    if (url.pathname === "/health") return healthCheck();
+    if (url.pathname === "/raw") return rawList();
 
     return new Response("Not Found", { status: 404 });
-  },
+  }
 };
 
-// ======= Landing Page =======
-function landing(req) {
-  const host = new URL(req.url).host;
-  const rows = PROXIES.map((p) => {
-    const link = makeLink(p, host);
-    return `<tr><td>${p.id}</td><td>${p.type}</td><td>${p.isp}</td><td>${p.location}</td><td>${p.latency} ms</td><td><code>${link}</code></td></tr>`;
-  }).join("");
+// 🔹 Ambil daftar proxy dari GitHub (dengan cache 5 menit)
+async function fetchProxyList() {
+  const now = Date.now();
+  if (CACHE.proxies.length && now - CACHE.updatedAt < 5 * 60 * 1000) {
+    return CACHE.proxies;
+  }
+
+  const resp = await fetch(SOURCE_URL, { cf: { cacheTtl: 0 } });
+  const text = await resp.text();
+  const list = text.split("\n").map(l => l.trim()).filter(Boolean);
+
+  CACHE.proxies = list;
+  CACHE.updatedAt = now;
+  return list;
+}
+
+// 🔹 Landing page HTML
+async function landing() {
+  const list = await fetchProxyList();
+  const rows = list.map((line, i) => `<tr><td>${i+1}</td><td><code>${line}</code></td></tr>`).join("");
 
   const html = `<!doctype html>
   <html lang="id">
@@ -75,144 +65,65 @@ function landing(req) {
   </head>
   <body>
     <h1>🌪️ VortexVpn</h1>
-    <p>Pusat akun proxy serverless di Cloudflare Workers — optimized for Indonesia.</p>
+    <p>Proxy list otomatis dari GitHub — optimized for Indonesia.</p>
     <a class="btn" href="/sub">Subscription API</a>
+    <a class="btn" href="/health">Cek Health</a>
+    <a class="btn" href="/raw">Raw List</a>
     <table>
-      <thead><tr><th>ID</th><th>Type</th><th>ISP</th><th>Lokasi</th><th>Latency</th><th>Link</th></tr></thead>
+      <thead><tr><th>No</th><th>Proxy</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   </body>
   </html>`;
-
-  return new Response(html, {
-    headers: { "content-type": "text/html;charset=utf-8" },
-  });
+  return new Response(html, { headers: { "content-type": "text/html;charset=utf-8" } });
 }
 
-// ======= Generate Link =======
-function links(req, url) {
-  const host = url.host;
-  const id = url.searchParams.get("node");
-  let selected = PROXIES;
-  if (id) selected = PROXIES.filter((p) => p.id === id);
-  const body = selected.map((p) => makeLink(p, host)).join("\n");
-  return new Response(body + "\n", {
-    headers: { "content-type": "text/plain; charset=utf-8" },
-  });
-}
-
-// ======= Subscription API =======
-function subscription(req, url) {
-  const host = url.host;
-  let filtered = PROXIES;
-
-  if (url.searchParams.has("isp")) {
-    const isp = url.searchParams.get("isp");
-    filtered = filtered.filter(
-      (p) => p.isp.toLowerCase() === isp.toLowerCase()
-    );
-  }
-  if (url.searchParams.has("node")) {
-    const node = url.searchParams.get("node");
-    filtered = filtered.filter((p) => p.id === node);
-  }
-
-  const list = filtered.map((p) => makeLink(p, host)).join("\n");
-  const data = btoa(unescape(encodeURIComponent(list)));
+// 🔹 Subscription (Base64)
+async function subscription() {
+  const list = await fetchProxyList();
+  const data = btoa(unescape(encodeURIComponent(list.join("\n"))));
   return new Response(data, {
     headers: {
       "content-type": "text/plain; charset=utf-8",
       "profile-update-interval": "6h",
-      "subscription-userinfo": `upload=0; download=0; total=0; expire=${
-        Math.floor(Date.now() / 1000) + 30 * 86400
-      }`,
+      "subscription-userinfo": `upload=0; download=0; total=0; expire=${Math.floor(Date.now()/1000)+30*86400}`,
     },
   });
 }
 
-// ======= Link Generator =======
-function makeLink(p, host) {
-  if (p.type === "vless") {
-    const q = new URLSearchParams({
-      type: "ws",
-      security: "tls",
-      sni: host,
-      path: p.path,
-      host,
-      alpn: "h2,http/1.1",
-      fp: "chrome",
-    }).toString();
-    return `vless://${p.uuid}@${host}:443?${q}#${encodeURIComponent(
-      `Vortex-${p.id}`
-    )}`;
-  }
-  if (p.type === "trojan") {
-    const q = new URLSearchParams({
-      type: "ws",
-      security: "tls",
-      sni: host,
-      path: p.path,
-      host,
-      alpn: "h2,http/1.1",
-      fp: "chrome",
-    }).toString();
-    return `trojan://${p.psk}@${host}:443?${q}#${encodeURIComponent(
-      `Vortex-${p.id}`
-    )}`;
-  }
-  return "";
+// 🔹 Ambil link tertentu
+async function links(url) {
+  const list = await fetchProxyList();
+  const id = url.searchParams.get("id");
+  let selected = list;
+  if (id) selected = [list[parseInt(id)-1]].filter(Boolean);
+  return new Response(selected.join("\n"), { headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
-// ======= DoH Resolver (Optional) =======
-async function dohResolveA(host, dohUrl = CONF.DOH_URL) {
-  const dnsQuery = makeDnsQuery(host);
-  const resp = await fetch(dohUrl, {
-    method: "POST",
-    headers: { "content-type": "application/dns-message" },
-    body: dnsQuery,
+// 🔹 Cek proxy health (max 10 biar cepat)
+async function healthCheck() {
+  const list = await fetchProxyList();
+  const results = [];
+
+  for (let line of list.slice(0, 10)) { 
+    try {
+      const u = new URL(line);
+      const res = await fetch("https://" + u.hostname, { method: "HEAD", redirect: "manual", cf: { cacheTtl: 0 } });
+      results.push({ proxy: line, status: res.status });
+    } catch (e) {
+      results.push({ proxy: line, status: "dead" });
+    }
+  }
+
+  return new Response(JSON.stringify(results, null, 2), {
+    headers: { "content-type": "application/json" }
   });
-  if (!resp.ok) return null;
-  const buf = await resp.arrayBuffer();
-  return parseDnsAnswer(buf);
 }
 
-function makeDnsQuery(host) {
-  // Minimal DNS wire-format query untuk A record
-  const encoder = new TextEncoder();
-  const nameParts = host.split(".");
-  let qname = [];
-  for (const part of nameParts) {
-    qname.push(part.length);
-    qname.push(...encoder.encode(part));
-  }
-  qname.push(0);
-
-  const header = new Uint8Array([
-    0x00,
-    0x00, // ID
-    0x01,
-    0x00, // flags: recursion desired
-    0x00,
-    0x01, // QDCOUNT
-    0x00,
-    0x00, // ANCOUNT
-    0x00,
-    0x00, // NSCOUNT
-    0x00,
-    0x00, // ARCOUNT
-  ]);
-  const qtypeqclass = new Uint8Array([0x00, 0x01, 0x00, 0x01]); // QTYPE=A, QCLASS=IN
-  return new Uint8Array([...header, ...qname, ...qtypeqclass]);
-}
-
-function parseDnsAnswer(buf) {
-  const dv = new DataView(buf);
-  const anCount = dv.getUint16(6);
-  if (anCount < 1) return null;
-
-  // sangat minimal, lompat ke bagian jawaban (skip header + question)
-  // praktik aslinya parsing lebih kompleks
-  // untuk demo kita anggap response benar dan ambil 4 byte terakhir
-  const ip = Array.from(new Uint8Array(buf).slice(-4)).join(".");
-  return ip;
+// 🔹 Raw proxy list (mentah)
+async function rawList() {
+  const list = await fetchProxyList();
+  return new Response(list.join("\n"), {
+    headers: { "content-type": "text/plain; charset=utf-8" }
+  });
 }
