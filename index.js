@@ -551,7 +551,15 @@ async function handleTCPOutbound(destination, clientSocket) {
     };
 
   } catch (error) {
-    console.error(`Connection to ${destination.address}:${destination.port} failed:`, error.message);
+    const errorMessage = `Failed to connect to destination: ${error.message}`;
+    console.error(`Error in handleTCPOutbound: ${errorMessage}`);
+
+    // Send the detailed error message to the client before closing.
+    // 1 is the readyState for OPEN.
+    if (clientSocket.readyState === 1) {
+        clientSocket.send(errorMessage);
+    }
+
     clientSocket.close(1011, `Could not connect to destination.`);
     return null;
   }
