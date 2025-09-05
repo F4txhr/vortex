@@ -216,4 +216,3 @@ function parseDnsAnswer(buf) {
   const ip = Array.from(new Uint8Array(buf).slice(-4)).join(".");
   return ip;
 }
-v
