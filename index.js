@@ -1,19 +1,13 @@
 /*
   🌪️ VortexVpn — Dynamic Proxy Bank
   - Ambil proxy list dari GitHub (proxyList.txt)
-  - Cache 5 menit di memory Worker
+  - Cache 5 menit menggunakan Cloudflare Cache API
   - Generate Link & Subscription
   - Health check untuk cek proxy hidup/mati
   - /raw untuk ambil list mentah
 */
 
 const SOURCE_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt";
-
-// cache in-memory (bertahan selama Worker instance hidup ± beberapa menit)
-let CACHE = {
-  proxies: [],
-  updatedAt: 0
-};
 
 export default {
   async fetch(req) {
@@ -29,20 +23,27 @@ export default {
   }
 };
 
-// 🔹 Ambil daftar proxy dari GitHub (dengan cache 5 menit)
+// 🔹 Ambil daftar proxy dari GitHub (dengan cache 5 menit menggunakan Cache API)
 async function fetchProxyList() {
-  const now = Date.now();
-  if (CACHE.proxies.length && now - CACHE.updatedAt < 5 * 60 * 1000) {
-    return CACHE.proxies;
+  const cache = caches.default;
+  const cacheKey = new Request(SOURCE_URL);
+
+  let response = await cache.match(cacheKey);
+
+  if (!response) {
+    // Jika tidak ada di cache, fetch dari sumber
+    const sourceResponse = await fetch(SOURCE_URL, { cf: { cacheTtl: 0 } }); // Biarkan kita yang mengontrol cache
+
+    // Buat response baru dengan header cache
+    response = new Response(sourceResponse.body, sourceResponse);
+    response.headers.set("Cache-Control", "s-maxage=300"); // Cache selama 5 menit (300 detik)
+
+    // Simpan ke cache. Awaiting this ensures the cache is written.
+    await cache.put(cacheKey, response.clone());
   }
 
-  const resp = await fetch(SOURCE_URL, { cf: { cacheTtl: 0 } });
-  const text = await resp.text();
-  const list = text.split("\n").map(l => l.trim()).filter(Boolean);
-
-  CACHE.proxies = list;
-  CACHE.updatedAt = now;
-  return list;
+  const text = await response.text();
+  return text.split("\n").map(l => l.trim()).filter(Boolean);
 }
 
 // 🔹 Landing page HTML
@@ -94,26 +95,71 @@ async function subscription() {
 // 🔹 Ambil link tertentu
 async function links(url) {
   const list = await fetchProxyList();
-  const id = url.searchParams.get("id");
-  let selected = list;
-  if (id) selected = [list[parseInt(id)-1]].filter(Boolean);
-  return new Response(selected.join("\n"), { headers: { "content-type": "text/plain; charset=utf-8" } });
+  const idStr = url.searchParams.get("id");
+
+  if (!idStr) {
+    // Jika tidak ada id, kembalikan semua link
+    return new Response(list.join("\n"), { headers: { "content-type": "text/plain; charset=utf-8" } });
+  }
+
+  const id = parseInt(idStr, 10);
+
+  if (isNaN(id) || id < 1) {
+    return new Response("Error: Invalid ID parameter. ID must be a positive integer.", { status: 400 });
+  }
+
+  if (id > list.length) {
+    return new Response(`Error: Invalid ID. ID must be between 1 and ${list.length}.`, { status: 404 });
+  }
+
+  const selected = list[id - 1];
+  return new Response(selected, { headers: { "content-type": "text/plain; charset=utf-8" } });
 }
 
 // 🔹 Cek proxy health (max 10 biar cepat)
+// Catatan: Pengecekan ini terbatas karena limitasi platform Cloudflare.
+// Hanya port HTTPS standar (443, 2053, 2083, 2087, 2096, 8443) yang bisa dites.
 async function healthCheck() {
   const list = await fetchProxyList();
   const results = [];
+  const ALLOWED_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
 
-  for (let line of list.slice(0, 10)) { 
+  // Jalankan pengecekan secara paralel untuk kecepatan
+  const promises = list.slice(0, 10).map(async (line) => {
+    let status = "untested";
     try {
       const u = new URL(line);
-      const res = await fetch("https://" + u.hostname, { method: "HEAD", redirect: "manual", cf: { cacheTtl: 0 } });
-      results.push({ proxy: line, status: res.status });
+      // Fallback ke port 443 jika tidak ada port spesifik
+      const port = parseInt(u.port || "443", 10);
+
+      if (ALLOWED_PORTS.includes(port)) {
+        // Hanya coba fetch jika port diizinkan
+        const res = await fetch(`https://${u.hostname}:${port}`, {
+          method: "HEAD",
+          redirect: "manual",
+          signal: AbortSignal.timeout(4000), // Tambah timeout 4 detik
+          cf: { cacheTtl: 0 }
+        });
+        status = res.status;
+      } else {
+        status = `unsupported_port (${u.port})`;
+      }
     } catch (e) {
-      results.push({ proxy: line, status: "dead" });
+      // Tangkap error seperti timeout atau koneksi gagal
+      status = "dead";
     }
-  }
+    return { proxy: line, status: status };
+  });
+
+  const settledResults = await Promise.allSettled(promises);
+  settledResults.forEach(res => {
+    if(res.status === 'fulfilled') {
+      results.push(res.value);
+    } else {
+      // Should not happen with the current logic, but as a fallback
+      results.push({ proxy: 'unknown', status: 'check_failed' });
+    }
+  });
 
   return new Response(JSON.stringify(results, null, 2), {
     headers: { "content-type": "application/json" }
