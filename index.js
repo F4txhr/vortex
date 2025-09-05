@@ -225,74 +225,68 @@ async function websocketHandler(request, pathDestination) {
 // Stream and Protocol Logic
 // =================================
 function handleWebSocketStream(server, pathDestination) {
-  let remoteSocket = null;
-  let remoteSocketWriter = null;
+	let remoteSocket = null;
+	let remoteSocketWriter = null;
+	let connectionEstablished = false;
 
-  server.readable.pipeTo(new WritableStream({
-    async write(chunk, controller) {
-      // If the remote socket writer is already set up, it means we are in "relay" mode.
-      if (remoteSocketWriter) {
-        await remoteSocketWriter.write(chunk);
-        return;
-      }
+	server.addEventListener('message', async (event) => {
+		if (connectionEstablished) {
+			if (remoteSocketWriter) {
+				await remoteSocketWriter.write(event.data);
+			}
+			return;
+		}
 
-      // This is the first chunk.
-      const { destination: headerDestination, remainingData, error, protocol } = parseRequestHeader(chunk);
+		addLog(`Received first message from client. Size: ${event.data.byteLength}`);
+		connectionEstablished = true;
 
-      if (error) {
-        addLog(`ERROR: Failed to parse request header: ${error}`);
-        server.close(1002, error);
-        return;
-      }
+		const { destination: headerDestination, remainingData, error, protocol } = parseRequestHeader(event.data);
 
-      // Prioritize the destination from the path, but fall back to the one from the header.
-      const finalDestination = pathDestination || headerDestination;
+		if (error) {
+			addLog(`ERROR: Failed to parse request header: ${error}`);
+			server.close(1002, error);
+			return;
+		}
 
-      if (!finalDestination) {
-        addLog(`ERROR: No destination specified in path or header.`);
-        server.close(1002, "Destination not specified.");
-        return;
-      }
+		const finalDestination = pathDestination || headerDestination;
 
-      addLog(`Protocol: ${protocol}. Destination: ${finalDestination.address}:${finalDestination.port}`);
+		if (!finalDestination) {
+			addLog(`ERROR: No destination specified in path or header.`);
+			server.close(1002, "Destination not specified.");
+			return;
+		}
 
-      // Establish the TCP connection to the destination.
-      const connectionResult = await handleTCPOutbound(finalDestination, server);
+		addLog(`Protocol: ${protocol}. Destination: ${finalDestination.address}:${finalDestination.port}`);
 
-      if (!connectionResult) {
-        // The handleTCPOutbound function will have already closed the client socket.
-        return;
-      }
+		const connectionResult = await handleTCPOutbound(finalDestination, server);
 
-      remoteSocket = connectionResult.socket;
-      remoteSocketWriter = connectionResult.writer;
+		if (!connectionResult) {
+			return;
+		}
 
-      // If there's any data left from the first chunk after the header,
-      // write it to the remote socket.
-      if (remainingData && remainingData.byteLength > 0) {
-        await remoteSocketWriter.write(remainingData);
-      }
-    },
-    close() {
-      console.log("Client WebSocket stream closed.");
-      if (remoteSocket) {
-        console.log("Closing remote TCP socket.");
-        remoteSocket.close();
-      }
-    },
-    abort(reason) {
-      console.error("Client WebSocket stream aborted:", reason);
-      if (remoteSocket) {
-        console.log("Aborting remote TCP socket.");
-        remoteSocket.abort();
-      }
-    },
-  })).catch(err => {
-    console.error("Error piping WebSocket stream:", err);
-    if (remoteSocket) {
-      remoteSocket.abort();
-    }
-  });
+		remoteSocket = connectionResult.socket;
+		remoteSocketWriter = connectionResult.writer;
+
+		if (remainingData && remainingData.byteLength > 0) {
+			await remoteSocketWriter.write(remainingData);
+		}
+	});
+
+	server.addEventListener('close', (event) => {
+		addLog(`Client WebSocket closed. Code: ${event.code}, Reason: ${event.reason}`);
+		if (remoteSocket) {
+			remoteSocket.close();
+		}
+	});
+
+	server.addEventListener('error', (error) => {
+		addLog(`WebSocket error: ${error.message}`);
+		if (remoteSocket) {
+			remoteSocket.close();
+		}
+	});
+
+	addLog('Added WebSocket event listeners.');
 }
 
 // =================================
