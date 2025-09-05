@@ -3,29 +3,195 @@ import { connect } from "cloudflare:sockets";
 // =================================
 // Configuration
 // =================================
-// For now, we keep configuration minimal.
-// In a real-world scenario, these might come from environment variables.
+const PROXY_BANK_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt";
 
 // =================================
 // Main Fetch Handler
 // =================================
 export default {
   async fetch(request, env, ctx) {
-    // We only handle WebSocket upgrade requests.
     const upgradeHeader = request.headers.get("Upgrade");
-    if (upgradeHeader !== "websocket") {
-      return new Response("Expected a WebSocket request.", { status: 426 });
+
+    // If it's a WebSocket request, handle it as a relay.
+    if (upgradeHeader === "websocket") {
+      const url = new URL(request.url);
+      // The destination is encoded in the path, e.g. /1.1.1.1-8080
+      const proxyMatch = url.pathname.match(/^\/([\w.-]+)-(\d+)$/);
+      if (proxyMatch) {
+        const destination = {
+          address: proxyMatch[1],
+          port: parseInt(proxyMatch[2]),
+        };
+        return websocketHandler(request, destination);
+      }
+      // We can also support requests where the destination is in the protocol header.
+      return websocketHandler(request, null);
     }
 
-    // The core logic is delegated to the websocketHandler.
-    return websocketHandler(request);
+    // If it's a standard HTTP request to the root, show the subscription page.
+    const url = new URL(request.url);
+    if (url.pathname === "/") {
+      return generateSubscriptionPage(request);
+    }
+
+    // Otherwise, return a 404.
+    return new Response("Not found.", { status: 404 });
   }
 };
 
 // =================================
+// HTML Page Generation
+// =================================
+async function generateSubscriptionPage(request) {
+    const proxyList = await getProxyList();
+    const workerHost = request.headers.get("host");
+
+    if (!proxyList || !proxyList.length) {
+        return new Response("<h1>Could not fetch proxy list.</h1>", {
+            status: 500,
+            headers: { "Content-Type": "text/html;charset=utf-8" },
+        });
+    }
+
+    let html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proxy Relay Configurations</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.6; background-color: #f8f9fa; color: #212529; margin: 0; }
+        .container { max-width: 900px; margin: 20px auto; padding: 20px; background: #fff; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.05); }
+        h1 { color: #0056b3; }
+        table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        th, td { padding: 12px 15px; border: 1px solid #dee2e6; text-align: left; }
+        th { background-color: #e9ecef; }
+        tr:nth-child(even) { background-color: #f8f9fa; }
+        code { display: block; background-color: #e9ecef; padding: 8px; border-radius: 4px; white-space: pre-wrap; word-break: break-all; font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace; font-size: 0.875em; }
+        .proxy-info { font-size: 0.9em; }
+        strong { color: #343a40; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Proxy Relay Configurations</h1>
+        <p>Worker Host: <strong>${workerHost}</strong></p>
+        <table>
+            <thead>
+                <tr>
+                    <th>Proxy Info</th>
+                    <th>Configuration Links</th>
+                </tr>
+            </thead>
+            <tbody>
+    `;
+
+    for (const proxy of proxyList) {
+        const configs = generateConfigLinks(proxy, workerHost);
+        html += `
+                <tr>
+                    <td class="proxy-info">
+                        <strong>IP:</strong> ${proxy.ip}<br>
+                        <strong>Port:</strong> ${proxy.port}<br>
+                        <strong>Country:</strong> ${proxy.country || 'N/A'}<br>
+                        <strong>Org:</strong> ${proxy.org || 'N/A'}
+                    </td>
+                    <td>
+                        <p><strong>VLESS:</strong></p>
+                        <code>${configs.vless}</code>
+                        <p><strong>Trojan:</strong></p>
+                        <code>${configs.trojan}</code>
+                        <p><strong>Shadowsocks:</strong></p>
+                        <code>${configs.shadowsocks}</code>
+                    </td>
+                </tr>
+        `;
+    }
+
+    html += `
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
+    `;
+
+    return new Response(html, {
+        headers: { "Content-Type": "text/html;charset=utf-8" },
+    });
+}
+
+// =================================
+// Proxy List Fetching
+// =================================
+async function getProxyList() {
+    try {
+        const response = await fetch(PROXY_BANK_URL);
+        if (!response.ok) {
+            console.error(`Failed to fetch proxy list: ${response.status} ${response.statusText}`);
+            return [];
+        }
+        const text = await response.text();
+        const lines = text.split('\n').filter(line => line.trim() !== '');
+
+        return lines.map(line => {
+            const [ip, port, country, org] = line.split(',');
+            return { ip, port, country, org };
+        });
+    } catch (error) {
+        console.error("Error fetching or parsing proxy list:", error);
+        return [];
+    }
+}
+
+// =================================
+// Configuration Link Generation
+// =================================
+function generateConfigLinks(proxy, workerHost) {
+    const configs = {};
+    const { ip, port, org, country } = proxy;
+
+    // The path that encodes the destination, e.g., /1.2.3.4-8080
+    const encodedPath = `/${ip}-${port}`;
+    const commonRemark = `${country || ''} ${org || ''}`.trim();
+
+    // VLESS Configuration
+    const vlessURL = new URL(`vless://${crypto.randomUUID()}@${workerHost}:443`);
+    vlessURL.searchParams.set('encryption', 'none');
+    vlessURL.searchParams.set('security', 'tls');
+    vlessURL.searchParams.set('sni', workerHost);
+    vlessURL.searchParams.set('type', 'ws');
+    vlessURL.searchParams.set('host', workerHost);
+    vlessURL.searchParams.set('path', encodedPath);
+    vlessURL.hash = encodeURIComponent(`VLESS - ${commonRemark}`);
+    configs.vless = vlessURL.toString();
+
+    // Trojan Configuration
+    const trojanURL = new URL(`trojan://${crypto.randomUUID()}@${workerHost}:443`);
+    trojanURL.searchParams.set('security', 'tls');
+    trojanURL.searchParams.set('sni', workerHost);
+    trojanURL.searchParams.set('type', 'ws');
+    trojanURL.searchParams.set('host', workerHost);
+    trojanURL.searchParams.set('path', encodedPath);
+    trojanURL.hash = encodeURIComponent(`Trojan - ${commonRemark}`);
+    configs.trojan = trojanURL.toString();
+
+    // Shadowsocks Configuration (using v2ray-plugin)
+    const ssUserPass = btoa(`aes-128-gcm:${crypto.randomUUID()}`);
+    const ssURL = new URL(`ss://${ssUserPass}@${workerHost}:443`);
+    const ssPlugin = `v2ray-plugin;tls;host=${workerHost};path=${encodedPath}`;
+    ssURL.searchParams.set('plugin', ssPlugin);
+    ssURL.hash = encodeURIComponent(`Shadowsocks - ${commonRemark}`);
+    configs.shadowsocks = ssURL.toString();
+
+    return configs;
+}
+
+// =================================
 // WebSocket Handler
 // =================================
-async function websocketHandler(request) {
+async function websocketHandler(request, pathDestination) {
   const webSocketPair = new WebSocketPair();
   const [client, server] = Object.values(webSocketPair);
 
@@ -33,8 +199,8 @@ async function websocketHandler(request) {
   server.accept();
   console.log("WebSocket connection accepted.");
 
-  // Pass the server-side socket to the stream handler.
-  handleWebSocketStream(server);
+  // Pass the server-side socket and the path-derived destination to the stream handler.
+  handleWebSocketStream(server, pathDestination);
 
   // Return the client-side socket to the browser to establish the connection.
   return new Response(null, {
@@ -46,7 +212,7 @@ async function websocketHandler(request) {
 // =================================
 // Stream and Protocol Logic
 // =================================
-function handleWebSocketStream(server) {
+function handleWebSocketStream(server, pathDestination) {
   let remoteSocket = null;
   let remoteSocketWriter = null;
 
@@ -58,8 +224,8 @@ function handleWebSocketStream(server) {
         return;
       }
 
-      // This is the first chunk. Parse the header and establish the connection.
-      const { destination, remainingData, error } = parseRequestHeader(chunk);
+      // This is the first chunk.
+      const { destination: headerDestination, remainingData, error } = parseRequestHeader(chunk);
 
       if (error) {
         console.error("Failed to parse request header:", error);
@@ -67,8 +233,17 @@ function handleWebSocketStream(server) {
         return;
       }
 
+      // Prioritize the destination from the path, but fall back to the one from the header.
+      const finalDestination = pathDestination || headerDestination;
+
+      if (!finalDestination) {
+        console.error("No destination specified in path or header.");
+        server.close(1002, "Destination not specified.");
+        return;
+      }
+
       // Establish the TCP connection to the destination.
-      const connectionResult = await handleTCPOutbound(destination, server);
+      const connectionResult = await handleTCPOutbound(finalDestination, server);
 
       if (!connectionResult) {
         // The handleTCPOutbound function will have already closed the client socket.
