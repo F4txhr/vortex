@@ -1,11 +1,11 @@
 // User-configurable variables
 // These should be changed to match your setup.
-export const rootDomain = "sapujagat.kaiakun52.workers.dev"; // Your root domain for the worker
-export const serviceName = "badakkembung"; // The name of your worker service
+export const rootDomain = "workers.dev"; // Your root domain for the worker
+export const serviceName = "vortex"; // The name of your worker service
 export const apiKey = "91635e325f2ff0c5cf163ee39d25cedd68d67"; // Your Global API key
 export const apiEmail = "cf.paid1@novan.email"; // Your Cloudflare account email
-export const accountID = "877922defd6351a3856f3b342cce03e3"; // Your Cloudflare Account ID
-export const zoneID = "aa95c8750307edf1f2ec5410d2c8798e"; // The Zone ID of the domain
+export const accountID = ""; // Your Cloudflare Account ID
+export const zoneID = ""; // The Zone ID of the domain
 
 // Application constants
 export const APP_DOMAIN = `${serviceName}.${rootDomain}`;
