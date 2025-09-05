@@ -1,344 +1,219 @@
 /*
-  VortexVpn — Cloudflare Worker (Bank Proxy Manager)
-  Bahasa Indonesia
+  🌪️ VortexVpn — Serverless V2Ray Tunnel (Cloudflare Workers)
+  Bahasa Indonesia | Multi-node proxy bank + Subscription API
 
-  Fitur utama:
-  - Endpoint `/` -> dashboard HTML menampilkan daftar proxy (ISP, lokasi, latency, link)
-  - Endpoint `/link?node=<id>` -> mengeluarkan link (vless:// / trojan://) untuk node
-  - Endpoint `/sub` (+ filter query) -> subscription (base64) berisi kumpulan link sesuai filter
-  - Endpoint `/api/nodes` -> JSON daftar node (untuk dipakai programmatically)
-  - Endpoint `/vless/{id}` dan `/trojan/{id}` -> handler WebSocket yang meneruskan koneksi ke backend sesuai node
+  Endpoint:
+    /        -> Landing (dashboard list proxy)
+    /link    -> Generate shareable links (single node / semua node)
+    /sub     -> Subscription (v2ray/Clash-compatible base64 list)
 
-  Catatan:
-  - UDP tidak didukung (batasan Cloudflare Workers).
-  - PROXIES disimpan di array (bisa diupgrade ke KV atau Durable Objects jika mau dinamis).
-  - Untuk produksi, GANTI UUID / PSK default, dan pertimbangkan rate-limiting + auth.
+  ⚠️ Catatan:
+  - Fokus utama: VLESS & Trojan via WebSocket
+  - UDP tidak didukung (batasan Workers)
+  - PROXIES bisa diganti dengan KV/DO untuk dinamis
 */
+
+const CONF = {
+  DOH_URL: "https://cloudflare-dns.com/dns-query",
+};
+
+const PROXIES = [
+  {
+    id: "sg1",
+    type: "vless",
+    uuid: "11111111-1111-1111-1111-111111111111",
+    host: "sg1.proxy.net",
+    path: "/vless",
+    isp: "SingTel",
+    location: "Singapore",
+    latency: 35,
+  },
+  {
+    id: "id1",
+    type: "trojan",
+    psk: "changeme-trojan",
+    host: "id1.proxy.net",
+    path: "/trojan",
+    isp: "IndiHome",
+    location: "Jakarta",
+    latency: 12,
+  },
+];
 
 export default {
   async fetch(req, env, ctx) {
     const url = new URL(req.url);
-    const pathname = url.pathname;
 
-    // Konfigurasi dasar
-    const CONF = {
-      NAME: env.NAME || 'VortexVpn',
-      DOH_URL: env.DOH_URL || 'https://cloudflare-dns.com/dns-query',
-    };
+    if (url.pathname === "/") return landing(req);
+    if (url.pathname === "/link") return links(req, url);
+    if (url.pathname === "/sub") return subscription(req, url);
 
-    // Daftar proxy (bank). Ubah / tambahkan sesuai kebutuhan.
-    const PROXIES = [
-      {
-        id: 'id-jkt-1',
-        type: 'trojan', // 'vless' atau 'trojan'
-        backend_host: '203.0.113.10',
-        backend_port: 443,
-        psk: 'trojan-secret-1',
-        isp: 'IndiHome',
-        location: 'Jakarta',
-        latency: 18,
-        note: 'Edge JKT 1'
-      },
-      {
-        id: 'sg-sg1',
-        type: 'vless',
-        backend_host: '198.51.100.23',
-        backend_port: 443,
-        uuid: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
-        isp: 'SingTel',
-        location: 'Singapore',
-        latency: 28,
-        note: 'SG Primary'
-      },
-      {
-        id: 'hk-hk1',
-        type: 'vless',
-        backend_host: '192.0.2.45',
-        backend_port: 443,
-        uuid: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
-        isp: 'HKNet',
-        location: 'Hong Kong',
-        latency: 35,
-        note: 'HK Backup'
-      }
-    ];
-
-    // Routing
-    if (pathname === '/') return dashboard(req, CONF, PROXIES);
-    if (pathname === '/link') return linkEndpoint(req, CONF, PROXIES);
-    if (pathname === '/sub') return subEndpoint(req, CONF, PROXIES);
-    if (pathname === '/api/nodes') return apiNodes(req, CONF, PROXIES);
-
-    // Dynamic proxy paths: /vless/{id} and /trojan/{id}
-    const vlessMatch = pathname.match(/^\/vless\/(.+)$/);
-    if (vlessMatch) return vlessHandler(req, CONF, PROXIES, vlessMatch[1]);
-    const trojanMatch = pathname.match(/^\/trojan\/(.+)$/);
-    if (trojanMatch) return trojanHandler(req, CONF, PROXIES, trojanMatch[1]);
-
-    return new Response('Not found', { status: 404 });
-  }
+    return new Response("Not Found", { status: 404 });
+  },
 };
 
-// ---------------- UI / Endpoints ----------------
-function dashboard(req, CONF, PROXIES) {
+// ======= Landing Page =======
+function landing(req) {
   const host = new URL(req.url).host;
-  // Buat baris tabel
-  const rows = PROXIES.map(p => {
-    const link = p.type === 'vless' ? makeVlessLink({ host, id: p.id }) : makeTrojanLink({ host, id: p.id });
-    return `
-      <tr>
-        <td>${p.id}</td>
-        <td>${p.type.toUpperCase()}</td>
-        <td>${p.isp}</td>
-        <td>${p.location}</td>
-        <td>${p.latency} ms</td>
-        <td><code>${escapeHtml(link)}</code></td>
-        <td><a class="btn" href="/link?node=${encodeURIComponent(p.id)}">Ambil</a></td>
-      </tr>`;
-  }).join('\n');
+  const rows = PROXIES.map((p) => {
+    const link = makeLink(p, host);
+    return `<tr><td>${p.id}</td><td>${p.type}</td><td>${p.isp}</td><td>${p.location}</td><td>${p.latency} ms</td><td><code>${link}</code></td></tr>`;
+  }).join("");
 
   const html = `<!doctype html>
   <html lang="id">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>${CONF.NAME}</title>
+    <meta charset="utf-8" />
+    <title>🌪️ VortexVpn</title>
     <style>
-      body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial;margin:24px;background:#0f1724;color:#e6eef8}
-      .card{max-width:1100px;margin:auto;background:#0b1220;padding:18px;border-radius:12px}
-      table{width:100%;border-collapse:collapse}
-      th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.04);text-align:left}
-      th{color:#a9c0ff}
-      code{background:#071228;padding:4px 6px;border-radius:6px}
-      .btn{display:inline-block;padding:8px 10px;border-radius:8px;background:#1f6feb;color:white;text-decoration:none}
+      body{font-family:system-ui;background:#0b1020;color:#e7e9ee;padding:20px}
+      table{width:100%;border-collapse:collapse;margin-top:20px}
+      th,td{padding:8px 12px;border:1px solid #333;text-align:left}
+      code{font-size:0.85em;color:#cde3ff}
+      a.btn{display:inline-block;padding:8px 12px;margin-top:10px;border:1px solid #39507f;border-radius:8px;color:#e7e9ee;text-decoration:none}
     </style>
   </head>
   <body>
-    <div class="card">
-      <h1>${CONF.NAME}</h1>
-      <p>Daftar node proxy (bank). Klik <strong>Ambil</strong> untuk menyalin link akun.</p>
-      <table>
-        <thead><tr><th>ID</th><th>Type</th><th>ISP</th><th>Lokasi</th><th>Latency</th><th>Link</th><th>Aksi</th></tr></thead>
-        <tbody>
-          ${rows}
-        </tbody>
-      </table>
-      <p style="margin-top:12px;color:#9fb2ff">API: <code>/api/nodes</code> — Subscription: <code>/sub</code>. Contoh: <code>/sub?isp=IndiHome</code></p>
-    </div>
+    <h1>🌪️ VortexVpn</h1>
+    <p>Pusat akun proxy serverless di Cloudflare Workers — optimized for Indonesia.</p>
+    <a class="btn" href="/sub">Subscription API</a>
+    <table>
+      <thead><tr><th>ID</th><th>Type</th><th>ISP</th><th>Lokasi</th><th>Latency</th><th>Link</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
   </body>
   </html>`;
 
-  return new Response(html, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  return new Response(html, {
+    headers: { "content-type": "text/html;charset=utf-8" },
+  });
 }
 
-function linkEndpoint(req, CONF, PROXIES) {
-  const url = new URL(req.url);
-  const node = url.searchParams.get('node');
-  if (!node) return new Response('node query param required', { status: 400 });
-  const p = PROXIES.find(x => x.id === node);
-  if (!p) return new Response('node not found', { status: 404 });
-  const host = new URL(req.url).host;
-  const link = p.type === 'vless' ? makeVlessLink({ host, id: p.id }) : makeTrojanLink({ host, id: p.id });
-  return new Response(link + '\n', { headers: { 'content-type': 'text/plain; charset=utf-8' } });
-}
-
-function subEndpoint(req, CONF, PROXIES) {
-  const url = new URL(req.url);
-  // Filter support: ?isp=IndiHome, ?type=vless, ?node=id-123
-  const params = url.searchParams;
-  let list = PROXIES.slice();
-  if (params.has('isp')) list = list.filter(p => p.isp.toLowerCase() === params.get('isp').toLowerCase());
-  if (params.has('type')) list = list.filter(p => p.type.toLowerCase() === params.get('type').toLowerCase());
-  if (params.has('node')) list = list.filter(p => p.id === params.get('node'));
-
+// ======= Generate Link =======
+function links(req, url) {
   const host = url.host;
-  const links = list.map(p => p.type === 'vless' ? makeVlessLink({ host, id: p.id }) : makeTrojanLink({ host, id: p.id }));
-  const payload = links.join('\n');
-  const data = btoa(unescape(encodeURIComponent(payload)));
-
-  return new Response(data + '\n', {
-    headers: {
-      'content-type': 'text/plain; charset=utf-8',
-      'profile-update-interval': '6h',
-      'subscription-userinfo': `upload=0; download=0; total=0; expire=${Math.floor(Date.now()/1000)+30*86400}`
-    }
+  const id = url.searchParams.get("node");
+  let selected = PROXIES;
+  if (id) selected = PROXIES.filter((p) => p.id === id);
+  const body = selected.map((p) => makeLink(p, host)).join("\n");
+  return new Response(body + "\n", {
+    headers: { "content-type": "text/plain; charset=utf-8" },
   });
 }
 
-function apiNodes(req, CONF, PROXIES) {
-  const url = new URL(req.url);
-  let list = PROXIES.slice();
-  if (url.searchParams.has('isp')) list = list.filter(p => p.isp.toLowerCase() === url.searchParams.get('isp').toLowerCase());
-  const out = list.map(p => ({ id: p.id, type: p.type, isp: p.isp, location: p.location, latency: p.latency, note: p.note }));
-  return new Response(JSON.stringify(out, null, 2), { headers: { 'content-type': 'application/json; charset=utf-8' } });
-}
+// ======= Subscription API =======
+function subscription(req, url) {
+  const host = url.host;
+  let filtered = PROXIES;
 
-// ---------------- Proxy Handlers ----------------
-// Handler ini menerima WebSocket dari klien dan meneruskan ke backend node.
-// Untuk VLESS: melakukan validasi UUID dari payload handshake.
-// Untuk Trojan: validasi PSK (dalam handshake awal).
-
-async function vlessHandler(req, CONF, PROXIES, nodeId) {
-  const p = PROXIES.find(x => x.id === nodeId && x.type === 'vless');
-  if (!p) return new Response('node not found', { status: 404 });
-  if (req.headers.get('Upgrade') !== 'websocket') return new Response('Expected WebSocket', { status: 426 });
-
-  const [client, server] = Object.values(new WebSocketPair());
-  server.accept();
-
-  server.addEventListener('message', async (ev) => {
-    const buf = new Uint8Array(ev.data);
-    try {
-      // Parse VLESS handshake (minimal)
-      const dv = new DataView(buf.buffer);
-      const ver = dv.getUint8(0);
-      if (ver !== 1) throw new Error('bad ver');
-      const uuidBytes = buf.slice(1, 17);
-      if (!uuidEqual(uuidBytes, p.uuid)) throw new Error('invalid uuid');
-      const optLen = dv.getUint8(17);
-      const idxAfterOpt = 18 + optLen;
-      const cmd = dv.getUint8(idxAfterOpt);
-      if (cmd !== 1) throw new Error('only tcp supported');
-      const port = dv.getUint16(idxAfterOpt + 1);
-      const at = dv.getUint8(idxAfterOpt + 3);
-      let host = '';
-      let off = idxAfterOpt + 4;
-      if (at === 1) { host = [...buf.slice(off, off+4)].join('.'); off += 4; }
-      else if (at === 2) { const l = dv.getUint8(off); off++; host = new TextDecoder().decode(buf.slice(off, off + l)); off += l; }
-      else if (at === 3) { const p16 = buf.slice(off, off+16); const dd = new DataView(p16.buffer); const parts = []; for (let i=0;i<8;i++) parts.push(dd.getUint16(i*2).toString(16)); host = parts.join(':'); off += 16; }
-
-      // Connect ke backend node
-      const socket = await connectToBackend(p.backend_host, p.backend_port, CONF);
-      // Kirim response awal ke klien
-      server.send(new Uint8Array([0,0]));
-
-      // Pipe TCP <-> WS
-      const reader = socket.readable.getReader();
-      const writer = socket.writable.getWriter();
-
-      (async () => {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          server.send(value);
-        }
-        server.close();
-      })();
-
-      // Kirim sisa data dari handshake
-      const rest = buf.slice(off);
-      if (rest.length) await writer.write(rest);
-
-      server.addEventListener('message', async (e2) => {
-        if (typeof e2.data === 'string') return;
-        await writer.write(new Uint8Array(e2.data));
-      });
-
-      server.addEventListener('close', async () => { try { await writer.close(); } catch(e){} });
-
-    } catch (e) {
-      server.close(1011, e.message);
-    }
-  });
-
-  return new Response(null, { status: 101, webSocket: client });
-}
-
-async function trojanHandler(req, CONF, PROXIES, nodeId) {
-  const p = PROXIES.find(x => x.id === nodeId && x.type === 'trojan');
-  if (!p) return new Response('node not found', { status: 404 });
-  if (req.headers.get('Upgrade') !== 'websocket') return new Response('Expected WebSocket', { status: 426 });
-
-  const [client, server] = Object.values(new WebSocketPair());
-  server.accept();
-
-  server.addEventListener('message', async (ev) => {
-    const buf = new Uint8Array(ev.data);
-    try {
-      const text = new TextDecoder().decode(buf);
-      const [line1, line2] = text.split('\r\n');
-      if (!line1 || !line1.startsWith(p.psk)) throw new Error('invalid psk');
-      const m = /HOST:\s([^:]+):(\d+)/i.exec(line2 || '');
-      if (!m) throw new Error('bad host');
-      const host = m[1];
-      const port = parseInt(m[2],10);
-
-      const socket = await connectToBackend(p.backend_host, p.backend_port, CONF);
-      server.send(new TextEncoder().encode('HTTP/1.1 200 OK\r\n\r\n'));
-
-      const reader = socket.readable.getReader();
-      const writer = socket.writable.getWriter();
-
-      (async () => {
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          server.send(value);
-        }
-        server.close();
-      })();
-
-      server.addEventListener('message', async (e2) => {
-        if (typeof e2.data === 'string') return;
-        await writer.write(new Uint8Array(e2.data));
-      });
-
-      server.addEventListener('close', async () => { try { await writer.close(); } catch(e){} });
-
-    } catch (e) {
-      server.close(1011, e.message);
-    }
-  });
-
-  return new Response(null, { status: 101, webSocket: client });
-}
-
-// ---------------- Helpers ----------------
-function makeVlessLink({ host, id }) {
-  // Link menggunakan host Worker, path menunjuk node spesifik
-  const uuid = id; // placeholder; client akan menggunakan uuid yang sesuai di sisi pengguna
-  // Saran: user harus mengganti UUID sesuai instruksi dari dashboard
-  const q = new URLSearchParams({ type: 'ws', security: 'tls', path: `/vless/${id}`, sni: host, host }).toString();
-  // NOTE: uuid placeholder di sini; sebenarnya client harus memasukkan UUID yang sesuai untuk node.
-  return `vless://UUID@${host}:443?${q}#${encodeURIComponent('VortexVpn-'+id)}`;
-}
-
-function makeTrojanLink({ host, id }) {
-  const q = new URLSearchParams({ type: 'ws', security: 'tls', path: `/trojan/${id}`, sni: host, host }).toString();
-  // PSK juga tidak ditampilkan di link ini; anda bisa mengubah format agar menyertakan PSK jika ingin
-  return `trojan://PSK@${host}:443?${q}#${encodeURIComponent('VortexVpn-'+id)}`;
-}
-
-async function connectToBackend(host, port, CONF) {
-  // Coba resolve via DoH jika host bukan IP
-  let target = host;
-  if (!/^\d+\.\d+\.\d+\.\d+$/.test(host) && !host.includes(':')) {
-    try {
-          const ip = await dohResolveA(host, CONF.DOH_URL);
-          if (ip) target = ip;
-        } catch (err) {
-  // optional: log error atau biarin kosong
-}
-
+  if (url.searchParams.has("isp")) {
+    const isp = url.searchParams.get("isp");
+    filtered = filtered.filter(
+      (p) => p.isp.toLowerCase() === isp.toLowerCase()
+    );
   }
-  // Menggunakan API connect() (Workers TCP sockets)
-  // @ts-ignore - environment yang mendukung harus menyediakan connect()
-  return await connect({ hostname: target, port });
+  if (url.searchParams.has("node")) {
+    const node = url.searchParams.get("node");
+    filtered = filtered.filter((p) => p.id === node);
+  }
+
+  const list = filtered.map((p) => makeLink(p, host)).join("\n");
+  const data = btoa(unescape(encodeURIComponent(list)));
+  return new Response(data, {
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "profile-update-interval": "6h",
+      "subscription-userinfo": `upload=0; download=0; total=0; expire=${
+        Math.floor(Date.now() / 1000) + 30 * 86400
+      }`,
+    },
+  });
 }
 
-async function dohResolveA(name, dohUrl) {
-  const r = await fetch(dohUrl + '?name=' + encodeURIComponent(name) + '&type=A');
-  if (!r.ok) return null;
-  const j = await r.json();
-  if (j.Answer && j.Answer.length) return j.Answer[0].data;
-  if (j.Answers && j.Answers.length) return j.Answers[0].data; // beberapa implementasi
-  return null;
+// ======= Link Generator =======
+function makeLink(p, host) {
+  if (p.type === "vless") {
+    const q = new URLSearchParams({
+      type: "ws",
+      security: "tls",
+      sni: host,
+      path: p.path,
+      host,
+      alpn: "h2,http/1.1",
+      fp: "chrome",
+    }).toString();
+    return `vless://${p.uuid}@${host}:443?${q}#${encodeURIComponent(
+      `Vortex-${p.id}`
+    )}`;
+  }
+  if (p.type === "trojan") {
+    const q = new URLSearchParams({
+      type: "ws",
+      security: "tls",
+      sni: host,
+      path: p.path,
+      host,
+      alpn: "h2,http/1.1",
+      fp: "chrome",
+    }).toString();
+    return `trojan://${p.psk}@${host}:443?${q}#${encodeURIComponent(
+      `Vortex-${p.id}`
+    )}`;
+  }
+  return "";
 }
 
-function uuidEqual(bytes16, uuidStr) {
-  const hex = [...bytes16].map(b=>b.toString(16).padStart(2,'0')).join('');
-  const canon = uuidStr.replace(/-/g,'').toLowerCase();
-  return hex === canon;
+// ======= DoH Resolver (Optional) =======
+async function dohResolveA(host, dohUrl = CONF.DOH_URL) {
+  const dnsQuery = makeDnsQuery(host);
+  const resp = await fetch(dohUrl, {
+    method: "POST",
+    headers: { "content-type": "application/dns-message" },
+    body: dnsQuery,
+  });
+  if (!resp.ok) return null;
+  const buf = await resp.arrayBuffer();
+  return parseDnsAnswer(buf);
 }
 
-function escapeHtml(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function makeDnsQuery(host) {
+  // Minimal DNS wire-format query untuk A record
+  const encoder = new TextEncoder();
+  const nameParts = host.split(".");
+  let qname = [];
+  for (const part of nameParts) {
+    qname.push(part.length);
+    qname.push(...encoder.encode(part));
+  }
+  qname.push(0);
+
+  const header = new Uint8Array([
+    0x00,
+    0x00, // ID
+    0x01,
+    0x00, // flags: recursion desired
+    0x00,
+    0x01, // QDCOUNT
+    0x00,
+    0x00, // ANCOUNT
+    0x00,
+    0x00, // NSCOUNT
+    0x00,
+    0x00, // ARCOUNT
+  ]);
+  const qtypeqclass = new Uint8Array([0x00, 0x01, 0x00, 0x01]); // QTYPE=A, QCLASS=IN
+  return new Uint8Array([...header, ...qname, ...qtypeqclass]);
+}
+
+function parseDnsAnswer(buf) {
+  const dv = new DataView(buf);
+  const anCount = dv.getUint16(6);
+  if (anCount < 1) return null;
+
+  // sangat minimal, lompat ke bagian jawaban (skip header + question)
+  // praktik aslinya parsing lebih kompleks
+  // untuk demo kita anggap response benar dan ambil 4 byte terakhir
+  const ip = Array.from(new Uint8Array(buf).slice(-4)).join(".");
+  return ip;
+}
+v
