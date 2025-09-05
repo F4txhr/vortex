@@ -1,21 +1,31 @@
 import { connect } from "cloudflare:sockets";
 
 // =================================
-// Configuration
+// Configuration & State
 // =================================
 const PROXY_BANK_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt";
+const MAX_LOG_ENTRIES = 20;
+let logEvents = ["[" + new Date().toISOString() + "] Worker started."];
+
+function addLog(message) {
+	const timestamp = new Date().toISOString();
+	logEvents.push(`[${timestamp}] ${message}`);
+	if (logEvents.length > MAX_LOG_ENTRIES) {
+		logEvents.shift(); // Keep the log size manageable
+	}
+	console.log(message); // Also log to the standard console
+}
 
 // =================================
 // Main Fetch Handler
 // =================================
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url);
     const upgradeHeader = request.headers.get("Upgrade");
 
-    // If it's a WebSocket request, handle it as a relay.
+    // Handle WebSocket relay requests
     if (upgradeHeader === "websocket") {
-      const url = new URL(request.url);
-      // The destination is encoded in the path, e.g. /1.1.1.1-8080
       const proxyMatch = url.pathname.match(/^\/([\w.-]+)-(\d+)$/);
       if (proxyMatch) {
         const destination = {
@@ -24,17 +34,20 @@ export default {
         };
         return websocketHandler(request, destination);
       }
-      // We can also support requests where the destination is in the protocol header.
       return websocketHandler(request, null);
     }
 
-    // If it's a standard HTTP request to the root, show the subscription page.
-    const url = new URL(request.url);
+    // Handle HTTP GET requests
     if (url.pathname === "/") {
       return generateSubscriptionPage(request);
     }
 
-    // Otherwise, return a 404.
+    if (url.pathname === "/log") {
+      return new Response(logEvents.join('\n'), {
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+      });
+    }
+
     return new Response("Not found.", { status: 404 });
   }
 };
@@ -195,9 +208,8 @@ async function websocketHandler(request, pathDestination) {
   const webSocketPair = new WebSocketPair();
   const [client, server] = Object.values(webSocketPair);
 
-  // The server-side WebSocket is the one we work with.
   server.accept();
-  console.log("WebSocket connection accepted.");
+  addLog(`Accepted WebSocket connection.`);
 
   // Pass the server-side socket and the path-derived destination to the stream handler.
   handleWebSocketStream(server, pathDestination);
@@ -225,10 +237,10 @@ function handleWebSocketStream(server, pathDestination) {
       }
 
       // This is the first chunk.
-      const { destination: headerDestination, remainingData, error } = parseRequestHeader(chunk);
+      const { destination: headerDestination, remainingData, error, protocol } = parseRequestHeader(chunk);
 
       if (error) {
-        console.error("Failed to parse request header:", error);
+        addLog(`ERROR: Failed to parse request header: ${error}`);
         server.close(1002, error);
         return;
       }
@@ -237,10 +249,12 @@ function handleWebSocketStream(server, pathDestination) {
       const finalDestination = pathDestination || headerDestination;
 
       if (!finalDestination) {
-        console.error("No destination specified in path or header.");
+        addLog(`ERROR: No destination specified in path or header.`);
         server.close(1002, "Destination not specified.");
         return;
       }
+
+      addLog(`Protocol: ${protocol}. Destination: ${finalDestination.address}:${finalDestination.port}`);
 
       // Establish the TCP connection to the destination.
       const connectionResult = await handleTCPOutbound(finalDestination, server);
@@ -297,30 +311,27 @@ function parseRequestHeader(chunk) {
   // specific and longer signatures than Shadowsocks. Shadowsocks is the most
   // generic and should be checked last to avoid false positives.
 
-  // VLESS check: First byte is protocol version, followed by 16-byte UUID.
+  // VLESS check
   if (chunk.byteLength > 17) {
     const vlessResult = parseVlessHeader(chunk);
     if (!vlessResult.error) {
-        console.log("Detected VLESS protocol.");
-        return vlessResult;
+        return { ...vlessResult, protocol: 'VLESS' };
     }
   }
 
-  // Trojan check: 56 bytes of hex-encoded password, CRLF, SOCKS5-like request.
+  // Trojan check
   if (chunk.byteLength > 58) {
       const trojanResult = parseTrojanHeader(chunk);
       if (!trojanResult.error) {
-          console.log("Detected Trojan protocol.");
-          return trojanResult;
+          return { ...trojanResult, protocol: 'Trojan' };
       }
   }
 
-  // Shadowsocks check: Starts with a SOCKS5-like address type.
+  // Shadowsocks check
   if (chunk.byteLength > 4) {
     const ssResult = parseShadowsocksHeader(chunk);
     if (!ssResult.error) {
-      console.log("Detected Shadowsocks protocol.");
-      return ssResult;
+      return { ...ssResult, protocol: 'Shadowsocks' };
     }
   }
 
@@ -519,48 +530,43 @@ function parseVmessHeader(chunk) {
  */
 async function handleTCPOutbound(destination, clientSocket) {
   try {
-    // Connect to the destination using TCP sockets API
     const remoteSocket = connect({
       hostname: destination.address,
       port: destination.port,
     });
 
-    // Pipe data from the remote TCP socket back to the client's WebSocket
+    addLog(`Successfully connected to destination: ${destination.address}:${destination.port}`);
+
     remoteSocket.readable.pipeTo(new WritableStream({
       async write(chunk) {
-        // The readyState for a WebSocket is 1 for OPEN.
         if (clientSocket.readyState === 1) {
           clientSocket.send(chunk);
         }
       },
       close() {
-        console.log("Remote TCP socket readable stream closed.");
+        addLog("Remote TCP socket readable stream closed.");
       },
       abort(reason) {
-        console.error("Remote TCP socket readable stream aborted:", reason);
+        addLog(`Remote TCP socket readable stream aborted: ${reason}`);
       },
     })).catch(err => {
-      console.error("Error piping remote readable to client writable:", err.message);
+      addLog(`Error piping remote readable to client writable: ${err.message}`);
     });
 
-    // Return the writer for the remote socket's writable stream.
-    // This allows the client-to-remote pipe to be set up.
     return {
       writer: remoteSocket.writable.getWriter(),
       socket: remoteSocket,
     };
 
   } catch (error) {
-    const errorMessage = `Failed to connect to destination: ${error.message}`;
-    console.error(`Error in handleTCPOutbound: ${errorMessage}`);
+    const errorMessage = `Failed to connect to ${destination.address}:${destination.port}: ${error.message}`;
+    addLog(`ERROR: ${errorMessage}`);
 
-    // Send the detailed error message to the client before closing.
-    // 1 is the readyState for OPEN.
     if (clientSocket.readyState === 1) {
         clientSocket.send(errorMessage);
     }
 
-    clientSocket.close(1011, `Could not connect to destination.`);
+    clientSocket.close(1011, `Connection failed.`);
     return null;
   }
 }
