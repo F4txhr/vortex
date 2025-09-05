@@ -18,12 +18,12 @@ function addLog(message) {
 }
 
 // Variables
-const rootDomain = "sapujagat.kaiakun52.workers.dev"; // Ganti dengan domain utama kalian
-const serviceName = "badakkembung"; // Ganti dengan nama workers kalian
+const rootDomain = "workers.dev"; // Ganti dengan domain utama kalian
+const serviceName = "vortex"; // Ganti dengan nama workers kalian
 const apiKey = "91635e325f2ff0c5cf163ee39d25cedd68d67"; // Ganti dengan Global API key kalian (https://dash.cloudflare.com/profile/api-tokens)
 const apiEmail = "cf.paid1@novan.email"; // Ganti dengan email yang kalian gunakan
-const accountID = "877922defd6351a3856f3b342cce03e3"; // Ganti dengan Account ID kalian (https://dash.cloudflare.com -> Klik domain yang kalian gunakan)
-const zoneID = "aa95c8750307edf1f2ec5410d2c8798e"; // Ganti dengan Zone ID kalian (https://dash.cloudflare.com -> Klik domain yang kalian gunakan)
+const accountID = ""; // Ganti dengan Account ID kalian (https://dash.cloudflare.com -> Klik domain yang kalian gunakan)
+const zoneID = ""; // Ganti dengan Zone ID kalian (https://dash.cloudflare.com -> Klik domain yang kalian gunakan)
 let isApiReady = false;
 let proxyIP = "";
 let cachedProxyList = [];
