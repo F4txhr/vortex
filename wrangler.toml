@@ -2,3 +2,25 @@ name = "vortex"
 main = "index.js"
 compatibility_date = "2023-09-01"
 compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Mandatory
+ROOT_DOMAIN = "workers.dev"
+SERVICE_NAME = "vortex"
+API_KEY = ""
+API_EMAIL = ""
+ACCOUNT_ID = ""
+ZONE_ID = ""
+
+# Optional
+PORTS = "443,80"
+PROTOCOLS = "najort,sselv,ss"
+KV_PROXY_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/kvProxyList.json"
+PROXY_BANK_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt"
+DNS_SERVER_ADDRESS = "8.8.8.8"
+PROXY_HEALTH_CHECK_API = "https://id1.foolvpn.me/api/v1/check"
+CONVERTER_URL = "https://api.foolvpn.me/convert"
+DONATE_LINK = "https://trakteer.id/dickymuliafiqri/tip"
+BAD_WORDS_LIST = "https://gist.githubusercontent.com/adierebel/a69396d79b787b84d89b45002cb37cd6/raw/6df5f8728b18699496ad588b3953931078ab9cf1/kata-kasar.txt"
+PROXY_PER_PAGE = "24"
+REVERSE_PROXY_TARGET = "example.com"
