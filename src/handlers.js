@@ -5,17 +5,11 @@ import {
   parseSsHeader,
   parseSselvHeader,
   parseNajortHeader,
+  PROTOCOL_TROJAN,
+  PROTOCOL_VLESS,
+  PROTOCOL_SHADOWSOCKS,
 } from "./parsers.js";
-import {
-  base64ToArrayBuffer,
-  shuffleArray,
-  reverse,
-  getFlagEmoji,
-} from "./utils.js";
-
-// These are stateful global variables. They are not ideal, but we are just refactoring.
-let proxyIP = "";
-let isApiReady = false;
+import { base64ToArrayBuffer, shuffleArray, getFlagEmoji } from "./utils.js";
 
 const WS_READY_STATE_OPEN = 1;
 const DNS_SERVER_PORT = 53;
@@ -32,10 +26,10 @@ export async function getKVProxyList(kvProxyUrl) {
   }
 
   const kvProxy = await fetch(kvProxyUrl);
-  if (kvProxy.status == 200) {
+  if (kvProxy.ok) {
     return await kvProxy.json();
   } else {
-    return {};
+    throw new Error(`Failed to fetch KV proxy list. Status: ${kvProxy.status}`);
   }
 }
 
@@ -45,25 +39,27 @@ export async function getProxyList(proxyBankUrl) {
   }
 
   const proxyBank = await fetch(proxyBankUrl);
-  let cachedProxyList = [];
-  if (proxyBank.status == 200) {
-    const text = (await proxyBank.text()) || "";
-
-    const proxyString = text.split("\n").filter(Boolean);
-    cachedProxyList = proxyString
-      .map((entry) => {
-        const [proxyIP, proxyPort, country, org] = entry.split(",");
-        return {
-          proxyIP: proxyIP || "Unknown",
-          proxyPort: proxyPort || "Unknown",
-          country: country || "Unknown",
-          org: org || "Unknown Org",
-        };
-      })
-      .filter(Boolean);
+  if (!proxyBank.ok) {
+    throw new Error(`Failed to fetch proxy list. Status: ${proxyBank.status}`);
   }
 
-  return cachedProxyList;
+  const text = (await proxyBank.text()) || "";
+  if (!text) {
+    return [];
+  }
+
+  const proxyString = text.split("\n").filter(Boolean);
+  return proxyString
+    .map((entry) => {
+      const [proxyIP, proxyPort, country, org] = entry.split(",");
+      return {
+        proxyIP: proxyIP || "Unknown",
+        proxyPort: proxyPort || "Unknown",
+        country: country || "Unknown",
+        org: org || "Unknown Org",
+      };
+    })
+    .filter(Boolean);
 }
 
 export async function reverseProxy(request, target, targetPath) {
@@ -89,6 +85,34 @@ export async function reverseProxy(request, target, targetPath) {
   return newResponse;
 }
 
+function createProxyUri(protocol, port, proxy, uuid, fillerDomain) {
+  const uri = new URL(`${PROTOCOL_TROJAN}://${fillerDomain}`);
+  uri.searchParams.set("encryption", "none");
+  uri.searchParams.set("type", "ws");
+  uri.searchParams.set("host", fillerDomain);
+
+  uri.protocol = protocol;
+  uri.port = port.toString();
+
+  if (protocol == "ss") {
+    uri.username = btoa(`none:${uuid}`);
+    uri.searchParams.set(
+      "plugin",
+      `v2ray-plugin${port == 80 ? "" : ";tls"};mux=0;mode=websocket;path=/${proxy.proxyIP}-${
+        proxy.proxyPort
+      };host=${fillerDomain}`
+    );
+  } else {
+    uri.username = uuid;
+  }
+
+  uri.searchParams.set("security", port == 443 ? "tls" : "none");
+  uri.searchParams.set("sni", port == 80 && protocol == "sselv" ? "" : fillerDomain);
+  uri.searchParams.set("path", `/${proxy.proxyIP}-${proxy.proxyPort}`);
+
+  return uri;
+}
+
 export function getAllConfig(env, request, hostName, proxyList, page = 0) {
   const PROXY_PER_PAGE = parseInt(env.PROXY_PER_PAGE);
   const startIndex = PROXY_PER_PAGE * page;
@@ -97,11 +121,6 @@ export function getAllConfig(env, request, hostName, proxyList, page = 0) {
 
   try {
     const uuid = crypto.randomUUID();
-
-    const uri = new URL(`${reverse("najort")}://${hostName}`);
-    uri.searchParams.set("encryption", "none");
-    uri.searchParams.set("type", "ws");
-    uri.searchParams.set("host", hostName);
 
     const document = new Document(request);
     document.setTitle("Welcome to <span class='text-blue-500 font-semibold'>Badak Terbang Proxy</span>");
@@ -114,32 +133,13 @@ export function getAllConfig(env, request, hostName, proxyList, page = 0) {
 
       const { proxyIP, proxyPort, country, org } = proxy;
 
-      uri.searchParams.set("path", `/${proxyIP}-${proxyPort}`);
-
       const proxies = [];
       for (const port of PORTS) {
-        uri.port = port.toString();
-        uri.hash = `${i + 1} ${getFlagEmoji(country)} ${org} WS ${
-          port == 443 ? "TLS" : "NTLS"
-        } [${env.SERVICE_NAME}]`;
         for (const protocol of PROTOCOLS) {
-          if (protocol === "ss") {
-            uri.username = btoa(`none:${uuid}`);
-            uri.searchParams.set(
-              "plugin",
-              `v2ray-plugin${
-                port == 80 ? "" : ";tls"
-              };mux=0;mode=websocket;path=/${proxyIP}-${proxyPort};host=${hostName}`
-            );
-          } else {
-            uri.username = uuid;
-            uri.searchParams.delete("plugin");
-          }
-
-          uri.protocol = protocol;
-          uri.searchParams.set("security", port == 443 ? "tls" : "none");
-          uri.searchParams.set("sni", port == 80 && protocol == reverse("sselv") ? "" : hostName);
-
+          const uri = createProxyUri(protocol, port, proxy, uuid, hostName);
+          uri.hash = `${i + 1} ${getFlagEmoji(country)} ${org} WS ${
+            port == 443 ? "TLS" : "NTLS"
+          } [${env.SERVICE_NAME}]`;
           proxies.push(uri.toString());
         }
       }
@@ -163,11 +163,11 @@ export function getAllConfig(env, request, hostName, proxyList, page = 0) {
 
     return document.build(env);
   } catch (error) {
-    return `An error occurred while generating the ${reverse("SSELV")} configurations. ${error}`;
+    return `An error occurred while generating the ${PROTOCOL_VLESS} configurations. ${error}`;
   }
 }
 
-export async function websocketHandler(request, env) {
+export async function websocketHandler(request, env, proxyIP) {
   const webSocketPair = new WebSocketPair();
   const [client, webSocket] = Object.values(webSocketPair);
 
@@ -204,11 +204,11 @@ export async function websocketHandler(request, env) {
           const protocol = await protocolSniffer(chunk);
           let protocolHeader;
 
-          if (protocol === reverse("najorT")) {
+          if (protocol === PROTOCOL_TROJAN) {
             protocolHeader = parseNajortHeader(chunk);
-          } else if (protocol === reverse("SSELV")) {
+          } else if (protocol === PROTOCOL_VLESS) {
             protocolHeader = parseSselvHeader(chunk);
-          } else if (protocol === reverse("skcoswodahS")) {
+          } else if (protocol === PROTOCOL_SHADOWSOCKS) {
             protocolHeader = parseSsHeader(chunk);
           } else {
             throw new Error("Unknown Protocol!");
@@ -247,7 +247,8 @@ export async function websocketHandler(request, env) {
             protocolHeader.rawClientData,
             webSocket,
             protocolHeader.version,
-            log
+            log,
+            proxyIP
           );
         },
         close() {
@@ -275,7 +276,8 @@ export async function handleTCPOutBound(
   rawClientData,
   webSocket,
   responseHeader,
-  log
+  log,
+  proxyIP
 ) {
   async function connectAndWrite(address, port) {
     const tcpSocket = connect({
@@ -465,7 +467,7 @@ export class CloudflareApi {
       },
     });
 
-    if (res.status == 200) {
+    if (res.ok) {
       const respJson = await res.json();
 
       return respJson.result
@@ -473,7 +475,9 @@ export class CloudflareApi {
         .map((data) => data.hostname);
     }
 
-    return [];
+    throw new Error(
+      `Failed to get domain list from Cloudflare API. Status: ${res.status}, Body: ${await res.text()}`
+    );
   }
 
   async registerDomain(domain) {
@@ -521,218 +525,225 @@ export class CloudflareApi {
   }
 }
 
-export async function mainFetch(request, env, ctx) {
-    try {
-      const url = new URL(request.url);
-      const upgradeHeader = request.headers.get("Upgrade");
-      const APP_DOMAIN = `${env.SERVICE_NAME}.${env.ROOT_DOMAIN}`;
+async function handleSub(request, env, url) {
+  const page = url.pathname.match(/^\/sub\/(\d+)$/);
+  const pageIndex = parseInt(page ? page[1] : "0");
+  const hostname = request.headers.get("Host");
 
-      if (env.API_KEY && env.API_EMAIL && env.ACCOUNT_ID && env.ZONE_ID) {
-        isApiReady = true;
-      }
+  const countrySelect = url.searchParams.get("cc")?.split(",");
+  const proxyBankUrl = url.searchParams.get("proxy-list") || env.PROXY_BANK_URL;
+  let proxyList = (await getProxyList(proxyBankUrl)).filter((proxy) => {
+    if (countrySelect) {
+      return countrySelect.includes(proxy.country);
+    }
+    return true;
+  });
 
-      if (upgradeHeader === "websocket") {
-        const proxyMatch = url.pathname.match(/^\/(.+[:=-]\d+)$/);
+  const result = getAllConfig(env, request, hostname, proxyList, pageIndex);
+  return new Response(result, {
+    status: 200,
+    headers: { "Content-Type": "text/html;charset=utf-8" },
+  });
+}
 
-        if (url.pathname.length == 3 || url.pathname.match(",")) {
-          const proxyKeys = url.pathname.replace("/", "").toUpperCase().split(",");
-          const proxyKey = proxyKeys[Math.floor(Math.random() * proxyKeys.length)];
-          const kvProxy = await getKVProxyList(env.KV_PROXY_URL);
+async function handleCheck(request, env, url) {
+  const target = url.searchParams.get("target").split(":");
+  const result = await checkProxyHealth(env, target[0], target[1] || "443");
 
-          proxyIP = kvProxy[proxyKey][Math.floor(Math.random() * kvProxy[proxyKey].length)];
+  return new Response(JSON.stringify(result), {
+    status: 200,
+    headers: {
+      ...CORS_HEADER_OPTIONS,
+      "Content-Type": "application/json",
+    },
+  });
+}
 
-          return await websocketHandler(request, env);
-        } else if (proxyMatch) {
-          proxyIP = proxyMatch[1];
-          return await websocketHandler(request, env);
-        }
-      }
+async function handleApiV1(request, env, url, isApiReady) {
+  const apiPath = url.pathname.replace("/api/v1", "");
+  const APP_DOMAIN = `${env.SERVICE_NAME}.${env.ROOT_DOMAIN}`;
 
-      if (url.pathname.startsWith("/sub")) {
-        const page = url.pathname.match(/^\/sub\/(\d+)$/);
-        const pageIndex = parseInt(page ? page[1] : "0");
-        const hostname = request.headers.get("Host");
-
-        const countrySelect = url.searchParams.get("cc")?.split(",");
-        const proxyBankUrl = url.searchParams.get("proxy-list") || env.PROXY_BANK_URL;
-        let proxyList = (await getProxyList(proxyBankUrl)).filter((proxy) => {
-          if (countrySelect) {
-            return countrySelect.includes(proxy.country);
-          }
-          return true;
-        });
-
-        const result = getAllConfig(env, request, hostname, proxyList, pageIndex);
-        return new Response(result, {
-          status: 200,
-          headers: { "Content-Type": "text/html;charset=utf-8" },
-        });
-      } else if (url.pathname.startsWith("/check")) {
-        const target = url.searchParams.get("target").split(":");
-        const result = await checkProxyHealth(env, target[0], target[1] || "443");
-
-        return new Response(JSON.stringify(result), {
-          status: 200,
-          headers: {
-            ...CORS_HEADER_OPTIONS,
-            "Content-Type": "application/json",
-          },
-        });
-      } else if (url.pathname.startsWith("/api/v1")) {
-        const apiPath = url.pathname.replace("/api/v1", "");
-
-        if (apiPath.startsWith("/domains")) {
-          if (!isApiReady) {
-            return new Response("Api not ready", {
-              status: 500,
-            });
-          }
-
-          const wildcardApiPath = apiPath.replace("/domains", "");
-          const cloudflareApi = new CloudflareApi(env);
-
-          if (wildcardApiPath == "/get") {
-            const domains = await cloudflareApi.getDomainList();
-            return new Response(JSON.stringify(domains), {
-              headers: {
-                ...CORS_HEADER_OPTIONS,
-              },
-            });
-          } else if (wildcardApiPath == "/put") {
-            const domain = url.searchParams.get("domain");
-            const register = await cloudflareApi.registerDomain(domain);
-
-            return new Response(register.toString(), {
-              status: register,
-              headers: {
-                ...CORS_HEADER_OPTIONS,
-              },
-            });
-          }
-        } else if (apiPath.startsWith("/sub")) {
-          const filterCC = url.searchParams.get("cc")?.split(",") || [];
-          const filterPort = url.searchParams.get("port")?.split(",") || env.PORTS.split(",");
-          const filterVPN = url.searchParams.get("vpn")?.split(",") || env.PROTOCOLS.split(",");
-          const filterLimit = parseInt(url.searchParams.get("limit")) || 10;
-          const filterFormat = url.searchParams.get("format") || "raw";
-          const fillerDomain = url.searchParams.get("domain") || APP_DOMAIN;
-
-          const proxyBankUrl = url.searchParams.get("proxy-list") || env.PROXY_BANK_URL;
-          const proxyList = await getProxyList(proxyBankUrl)
-            .then((proxies) => {
-              if (filterCC.length) {
-                return proxies.filter((proxy) => filterCC.includes(proxy.country));
-              }
-              return proxies;
-            })
-            .then((proxies) => {
-              shuffleArray(proxies);
-              return proxies;
-            });
-
-          const uuid = crypto.randomUUID();
-          const result = [];
-          for (const proxy of proxyList) {
-            const uri = new URL(`${reverse("najort")}://${fillerDomain}`);
-            uri.searchParams.set("encryption", "none");
-            uri.searchParams.set("type", "ws");
-            uri.searchParams.set("host", APP_DOMAIN);
-
-            for (const port of filterPort) {
-              for (const protocol of filterVPN) {
-                if (result.length >= filterLimit) break;
-
-                uri.protocol = protocol;
-                uri.port = port.toString();
-                if (protocol == "ss") {
-                  uri.username = btoa(`none:${uuid}`);
-                  uri.searchParams.set(
-                    "plugin",
-                    `v2ray-plugin${port == 80 ? "" : ";tls"};mux=0;mode=websocket;path=/${proxy.proxyIP}-${
-                      proxy.proxyPort
-                    };host=${APP_DOMAIN}`
-                  );
-                } else {
-                  uri.username = uuid;
-                }
-
-                uri.searchParams.set("security", port == 443 ? "tls" : "none");
-                uri.searchParams.set("sni", port == 80 && protocol == reverse("sselv") ? "" : APP_DOMAIN);
-                uri.searchParams.set("path", `/${proxy.proxyIP}-${proxy.proxyPort}`);
-
-                uri.hash = `${result.length + 1} ${getFlagEmoji(proxy.country)} ${proxy.org} WS ${
-                  port == 443 ? "TLS" : "NTLS"
-                } [${env.SERVICE_NAME}]`;
-                result.push(uri.toString());
-              }
-            }
-          }
-
-          let finalResult = "";
-          switch (filterFormat) {
-            case "raw":
-              finalResult = result.join("\n");
-              break;
-            case "v2ray":
-              finalResult = btoa(result.join("\n"));
-              break;
-            case "clash":
-            case "sfa":
-            case "bfr":
-              const res = await fetch(env.CONVERTER_URL, {
-                method: "POST",
-                body: JSON.stringify({
-                  url: result.join(","),
-                  format: filterFormat,
-                  template: "cf",
-                }),
-              });
-              if (res.status == 200) {
-                finalResult = await res.text();
-              } else {
-                return new Response(res.statusText, {
-                  status: res.status,
-                  headers: {
-                    ...CORS_HEADER_OPTIONS,
-                  },
-                });
-              }
-              break;
-          }
-
-          return new Response(finalResult, {
-            status: 200,
-            headers: {
-              ...CORS_HEADER_OPTIONS,
-            },
-          });
-        } else if (apiPath.startsWith("/myip")) {
-          return new Response(
-            JSON.stringify({
-              ip:
-                request.headers.get("cf-connecting-ipv6") ||
-                request.headers.get("cf-connecting-ip") ||
-                request.headers.get("x-real-ip"),
-              colo: request.headers.get("cf-ray")?.split("-")[1],
-              ...request.cf,
-            }),
-            {
-              headers: {
-                ...CORS_HEADER_OPTIONS,
-              },
-            }
-          );
-        }
-      }
-
-      const targetReverseProxy = env.REVERSE_PROXY_TARGET;
-      return await reverseProxy(request, targetReverseProxy);
-    } catch (err) {
-      return new Response(`An error occurred: ${err.toString()}`, {
+  if (apiPath.startsWith("/domains")) {
+    if (!isApiReady) {
+      return new Response("Api not ready", {
         status: 500,
+      });
+    }
+
+    const wildcardApiPath = apiPath.replace("/domains", "");
+    const cloudflareApi = new CloudflareApi(env);
+
+    if (wildcardApiPath == "/get") {
+      const domains = await cloudflareApi.getDomainList();
+      return new Response(JSON.stringify(domains), {
+        headers: {
+          ...CORS_HEADER_OPTIONS,
+        },
+      });
+    } else if (wildcardApiPath == "/put") {
+      const domain = url.searchParams.get("domain");
+      const register = await cloudflareApi.registerDomain(domain);
+
+      return new Response(register.toString(), {
+        status: register,
         headers: {
           ...CORS_HEADER_OPTIONS,
         },
       });
     }
+  } else if (apiPath.startsWith("/sub")) {
+    const filterCC = url.searchParams.get("cc")?.split(",") || [];
+    const filterPort = url.searchParams.get("port")?.split(",") || env.PORTS.split(",");
+    const filterVPN = url.searchParams.get("vpn")?.split(",") || env.PROTOCOLS.split(",");
+    const filterLimit = parseInt(url.searchParams.get("limit")) || 10;
+    const filterFormat = url.searchParams.get("format") || "raw";
+    const fillerDomain = url.searchParams.get("domain") || APP_DOMAIN;
+
+    const proxyBankUrl = url.searchParams.get("proxy-list") || env.PROXY_BANK_URL;
+    const proxyList = await getProxyList(proxyBankUrl)
+      .then((proxies) => {
+        if (filterCC.length) {
+          return proxies.filter((proxy) => filterCC.includes(proxy.country));
+        }
+        return proxies;
+      })
+      .then((proxies) => {
+        shuffleArray(proxies);
+        return proxies;
+      });
+
+    const uuid = crypto.randomUUID();
+    const result = [];
+    for (const proxy of proxyList) {
+      if (result.length >= filterLimit) break;
+      for (const port of filterPort) {
+        if (result.length >= filterLimit) break;
+        for (const protocol of filterVPN) {
+          if (result.length >= filterLimit) break;
+
+          const uri = createProxyUri(protocol, port, proxy, uuid, fillerDomain);
+          uri.hash = `${result.length + 1} ${getFlagEmoji(proxy.country)} ${proxy.org} WS ${
+            port == 443 ? "TLS" : "NTLS"
+          } [${env.SERVICE_NAME}]`;
+          result.push(uri.toString());
+        }
+      }
+    }
+
+    let finalResult = "";
+    switch (filterFormat) {
+      case "raw":
+        finalResult = result.join("\n");
+        break;
+      case "v2ray":
+        finalResult = btoa(result.join("\n"));
+        break;
+      case "clash":
+      case "sfa":
+      case "bfr":
+        const res = await fetch(env.CONVERTER_URL, {
+          method: "POST",
+          body: JSON.stringify({
+            url: result.join(","),
+            format: filterFormat,
+            template: "cf",
+          }),
+        });
+        if (res.status == 200) {
+          finalResult = await res.text();
+        } else {
+          return new Response(res.statusText, {
+            status: res.status,
+            headers: {
+              ...CORS_HEADER_OPTIONS,
+            },
+          });
+        }
+        break;
+    }
+
+    return new Response(finalResult, {
+      status: 200,
+      headers: {
+        ...CORS_HEADER_OPTIONS,
+      },
+    });
+  } else if (apiPath.startsWith("/myip")) {
+    return new Response(
+      JSON.stringify({
+        ip:
+          request.headers.get("cf-connecting-ipv6") ||
+          request.headers.get("cf-connecting-ip") ||
+          request.headers.get("x-real-ip"),
+        colo: request.headers.get("cf-ray")?.split("-")[1],
+        ...request.cf,
+      }),
+      {
+        headers: {
+          ...CORS_HEADER_OPTIONS,
+        },
+      }
+    );
+  }
+
+  return new Response("Not found", { status: 404 });
+}
+
+const routes = [
+  { path: "/sub", handler: handleSub },
+  { path: "/check", handler: handleCheck },
+  { path: "/api/v1", handler: handleApiV1 },
+];
+
+export async function mainFetch(request, env, ctx) {
+  let proxyIP = "";
+  let isApiReady = false;
+
+  try {
+    const url = new URL(request.url);
+    const upgradeHeader = request.headers.get("Upgrade");
+
+    if (env.API_KEY && env.API_EMAIL && env.ACCOUNT_ID && env.ZONE_ID) {
+      isApiReady = true;
+    }
+
+    if (upgradeHeader === "websocket") {
+      const proxyMatch = url.pathname.match(/^\/(.+[:=-]\d+)$/);
+
+      if (url.pathname.length == 3 || url.pathname.match(",")) {
+        const proxyKeys = url.pathname.replace("/", "").toUpperCase().split(",");
+        const proxyKey = proxyKeys[Math.floor(Math.random() * proxyKeys.length)];
+        const kvProxy = await getKVProxyList(env.KV_PROXY_URL);
+
+        proxyIP = kvProxy[proxyKey][Math.floor(Math.random() * kvProxy[proxyKey].length)];
+
+        return await websocketHandler(request, env, proxyIP);
+      } else if (proxyMatch) {
+        proxyIP = proxyMatch[1];
+        return await websocketHandler(request, env, proxyIP);
+      }
+    }
+
+    for (const route of routes) {
+      if (url.pathname.startsWith(route.path)) {
+        const handlerArgs =
+          route.path === "/api/v1" ? [request, env, url, isApiReady] : [request, env, url];
+        return await route.handler(...handlerArgs);
+      }
+    }
+
+    const targetReverseProxy = env.REVERSE_PROXY_TARGET;
+    if (targetReverseProxy) {
+      return await reverseProxy(request, targetReverseProxy);
+    }
+
+    return new Response("Not found", { status: 404 });
+  } catch (err) {
+    return new Response(`An error occurred: ${err.toString()}`, {
+      status: 500,
+      headers: {
+        ...CORS_HEADER_OPTIONS,
+      },
+    });
+  }
 }
