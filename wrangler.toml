@@ -1,4 +1,4 @@
-name = "vortexvpn"
+name = "vortex"
 main = "index.js"
 compatibility_date = "2023-09-01"
 compatibility_flags = ["nodejs_compat"]
@@ -14,7 +14,7 @@ ZONE_ID = ""
 
 # Optional
 PORTS = "443,80"
-PROTOCOLS = "trojan,vless,ss"
+PROTOCOLS = "najort,sselv,ss"
 KV_PROXY_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/kvProxyList.json"
 PROXY_BANK_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt"
 DNS_SERVER_ADDRESS = "8.8.8.8"

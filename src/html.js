@@ -355,7 +355,7 @@ const baseHTML = `
         const rawDomain = domainInputElement.value.toLowerCase();
         const domain = domainInputElement.value + "." + rootDomain;
 
-        if (!rawDomain.match(/\w+\.\w+$/) || rawDomain.endsWith(rootDomain)) {
+        if (!rawDomain.match(/\\w+\\.\\w+$/) || rawDomain.endsWith(rootDomain)) {
           windowInfoContainer.innerText = "Invalid URL!";
           return;
         }

@@ -1,8 +1,4 @@
-import { arrayBufferToHex } from "./utils.js";
-
-export const PROTOCOL_TROJAN = "trojan";
-export const PROTOCOL_VLESS = "vless";
-export const PROTOCOL_SHADOWSOCKS = "shadowsocks";
+import { reverse, arrayBufferToHex } from "./utils.js";
 
 export async function protocolSniffer(buffer) {
   if (buffer.byteLength >= 62) {
@@ -10,7 +6,7 @@ export async function protocolSniffer(buffer) {
     if (najortDelimiter[0] === 0x0d && najortDelimiter[1] === 0x0a) {
       if (najortDelimiter[2] === 0x01 || najortDelimiter[2] === 0x03 || najortDelimiter[2] === 0x7f) {
         if (najortDelimiter[3] === 0x01 || najortDelimiter[3] === 0x03 || najortDelimiter[3] === 0x04) {
-          return PROTOCOL_TROJAN;
+          return reverse("najorT");
         }
       }
     }
@@ -18,10 +14,10 @@ export async function protocolSniffer(buffer) {
 
   const sselvDelimiter = new Uint8Array(buffer.slice(1, 17));
   if (arrayBufferToHex(sselvDelimiter).match(/^[0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}$/i)) {
-    return PROTOCOL_VLESS;
+    return reverse("SSELV");
   }
 
-  return PROTOCOL_SHADOWSOCKS; // default
+  return reverse("skcoswodahS"); // default
 }
 
 export function parseSsHeader(ssBuffer) {
@@ -54,7 +50,7 @@ export function parseSsHeader(ssBuffer) {
     default:
       return {
         hasError: true,
-        message: `Invalid addressType for ${PROTOCOL_SHADOWSOCKS}: ${addressType}`,
+        message: `Invalid addressType for ${reverse("skcoswodahS")}: ${addressType}`,
       };
   }
 
