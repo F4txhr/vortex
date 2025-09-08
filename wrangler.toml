@@ -1,4 +1,4 @@
-name = "vortexvpn"
+name = "vortex"
 main = "index.js"
 compatibility_date = "2023-09-01"
 compatibility_flags = ["nodejs_compat"]

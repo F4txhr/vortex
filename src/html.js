@@ -160,7 +160,7 @@ export class Document {
 
   registerProxies(proxyInfo, proxies) {
     const textareaId = `proxy-text-${proxyInfo.proxyIP}-${proxyInfo.proxyPort}`;
-    const allConfigs = proxies.join("\\n");
+    const allConfigs = proxies.join("\n");
 
     this.proxyCards += `
       <div class="bg-dark-card rounded-lg shadow-lg p-5 flex flex-col transform hover:scale-105 transition-transform duration-300">

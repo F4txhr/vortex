@@ -158,7 +158,7 @@ export function getAllConfig(env, request, hostName, proxyList, page = 0) {
     document.addPageButton(
       "Next",
       `/sub/${page + 1}`,
-      page < Math.floor(proxyList.length / PROXY_PER_PAGE) ? false : true
+      page >= Math.ceil(proxyList.length / PROXY_PER_PAGE) - 1
     );
 
     return document.build(env);
