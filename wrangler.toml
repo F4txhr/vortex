@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 # Mandatory
 ROOT_DOMAIN = "workers.dev"
-SERVICE_NAME = "vortex"
+SERVICE_NAME = "vortexvpn"
 API_KEY = ""
 API_EMAIL = ""
 ACCOUNT_ID = ""
