@@ -22,3 +22,15 @@ Then, follow these steps:
     npm test
     ```
     This will execute all `*.test.js` files and show you the results in the terminal.
+
+### Running on Termux
+
+Yes, it is possible to run the test suite on Android using Termux.
+
+First, you need to install the necessary packages within Termux:
+```bash
+pkg update && pkg upgrade
+pkg install nodejs git
+```
+
+After that, you can clone your repository and follow the standard testing steps above (`npm install`, `npm test`).
