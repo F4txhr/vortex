@@ -14,7 +14,7 @@ ZONE_ID = ""
 
 # Optional
 PORTS = "443,80"
-PROTOCOLS = "najort,sselv,ss"
+PROTOCOLS = "trojan,vless,ss"
 KV_PROXY_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/kvProxyList.json"
 PROXY_BANK_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt"
 DNS_SERVER_ADDRESS = "8.8.8.8"

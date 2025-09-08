@@ -107,7 +107,7 @@ function createProxyUri(protocol, port, proxy, uuid, fillerDomain) {
   }
 
   uri.searchParams.set("security", port == 443 ? "tls" : "none");
-  uri.searchParams.set("sni", port == 80 && protocol == "sselv" ? "" : fillerDomain);
+  uri.searchParams.set("sni", port == 80 && protocol == "vless" ? "" : fillerDomain);
   uri.searchParams.set("path", `/${proxy.proxyIP}-${proxy.proxyPort}`);
 
   return uri;
