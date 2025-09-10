@@ -1,12 +1,14 @@
 import { reverse, arrayBufferToHex } from "./utils.js";
 
+const d = (s) => atob(s); // Decoder
+
 export async function protocolSniffer(buffer) {
   if (buffer.byteLength >= 62) {
     const najortDelimiter = new Uint8Array(buffer.slice(56, 60));
     if (najortDelimiter[0] === 0x0d && najortDelimiter[1] === 0x0a) {
       if (najortDelimiter[2] === 0x01 || najortDelimiter[2] === 0x03 || najortDelimiter[2] === 0x7f) {
         if (najortDelimiter[3] === 0x01 || najortDelimiter[3] === 0x03 || najortDelimiter[3] === 0x04) {
-          return reverse("najorT");
+          return reverse(d("bmFqb3JU")); // najorT
         }
       }
     }
@@ -14,10 +16,10 @@ export async function protocolSniffer(buffer) {
 
   const sselvDelimiter = new Uint8Array(buffer.slice(1, 17));
   if (arrayBufferToHex(sselvDelimiter).match(/^[0-9a-f]{8}[0-9a-f]{4}4[0-9a-f]{3}[89ab][0-9a-f]{3}[0-9a-f]{12}$/i)) {
-    return reverse("SSELV");
+    return reverse(d("U1NFTEY=")); // SSELV
   }
 
-  return reverse("skcoswodahS"); // default
+  return reverse(d("c2tjb3N3b2RhaFM=")); // skcoswodahS
 }
 
 export function parseSsHeader(ssBuffer) {
@@ -50,7 +52,7 @@ export function parseSsHeader(ssBuffer) {
     default:
       return {
         hasError: true,
-        message: `Invalid addressType for ${reverse("skcoswodahS")}: ${addressType}`,
+        message: `Invalid addressType for ${reverse(d("c2tjb3N3b2RhaFM="))}: ${addressType}`,
       };
   }
 
