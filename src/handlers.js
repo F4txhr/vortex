@@ -26,8 +26,6 @@ const CORS_HEADER_OPTIONS = {
 };
 
 
-const d = (s) => atob(s); // Decoder
-
 export async function getKVProxyList(kvProxyUrl) {
   if (!kvProxyUrl) {
     throw new Error("No KV Proxy URL Provided!");
@@ -46,11 +44,7 @@ export async function getProxyList(proxyBankUrl) {
     throw new Error("No Proxy Bank URL Provided!");
   }
 
-  const proxyBank = await fetch(proxyBankUrl, {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36'
-    }
-  });
+  const proxyBank = await fetch(proxyBankUrl);
   let cachedProxyList = [];
   if (proxyBank.status == 200) {
     const text = (await proxyBank.text()) || "";
@@ -104,15 +98,15 @@ export function getAllConfig(env, request, hostName, proxyList, page = 0) {
   try {
     const uuid = crypto.randomUUID();
 
-    const uri = new URL(`${reverse(d("bmFqb3J0"))}://${hostName}`); // najort
-    uri.searchParams.set(d("ZW5jcnlwdGlvbg=="), "none"); // encryption
-    uri.searchParams.set(d("dHlwZQ=="), "ws"); // type
-    uri.searchParams.set(d("aG9zdA=="), hostName); // host
+    const uri = new URL(`${reverse("najort")}://${hostName}`);
+    uri.searchParams.set("encryption", "none");
+    uri.searchParams.set("type", "ws");
+    uri.searchParams.set("host", hostName);
 
     const document = new Document(request);
-    document.setTitle("Badak Terbang Proxy");
-    document.addInfo(`Total Proxies: ${proxyList.length}`);
-    document.addInfo(`Page: ${page + 1}/${Math.ceil(proxyList.length / PROXY_PER_PAGE)}`);
+    document.setTitle("Welcome to <span class='text-blue-500 font-semibold'>Badak Terbang Proxy</span>");
+    document.addInfo(`Total: ${proxyList.length}`);
+    document.addInfo(`Page: ${page}/${Math.floor(proxyList.length / PROXY_PER_PAGE)}`);
 
     for (let i = startIndex; i < startIndex + PROXY_PER_PAGE; i++) {
       const proxy = proxyList[i];
@@ -120,7 +114,7 @@ export function getAllConfig(env, request, hostName, proxyList, page = 0) {
 
       const { proxyIP, proxyPort, country, org } = proxy;
 
-      uri.searchParams.set(d("cGF0aA=="), `/${proxyIP}-${proxyPort}`); // path
+      uri.searchParams.set("path", `/${proxyIP}-${proxyPort}`);
 
       const proxies = [];
       for (const port of PORTS) {
@@ -129,22 +123,23 @@ export function getAllConfig(env, request, hostName, proxyList, page = 0) {
           port == 443 ? "TLS" : "NTLS"
         } [${env.SERVICE_NAME}]`;
         for (const protocol of PROTOCOLS) {
-          if (protocol === d("c3M=")) { // ss
+          if (protocol === "ss") {
             uri.username = btoa(`none:${uuid}`);
             uri.searchParams.set(
-              d("cGx1Z2lu"), // plugin
-              `${d("djJyYXktcGx1Z2lu")}${ // v2ray-plugin
+              "plugin",
+              `v2ray-plugin${
                 port == 80 ? "" : ";tls"
               };mux=0;mode=websocket;path=/${proxyIP}-${proxyPort};host=${hostName}`
             );
           } else {
             uri.username = uuid;
-            uri.searchParams.delete(d("cGx1Z2lu")); // plugin
+            uri.searchParams.delete("plugin");
           }
 
           uri.protocol = protocol;
-          uri.searchParams.set(d("c2VjdXJpdHk="), port == 443 ? "tls" : "none"); // security
-          uri.searchParams.set(d("c25p"), port == 80 && protocol == reverse(d("c3NlbHY=")) ? "" : hostName); // sni, sselv
+          uri.searchParams.set("security", port == 443 ? "tls" : "none");
+          uri.searchParams.set("sni", port == 80 && protocol == reverse("sselv") ? "" : hostName);
+
           proxies.push(uri.toString());
         }
       }
@@ -163,12 +158,12 @@ export function getAllConfig(env, request, hostName, proxyList, page = 0) {
     document.addPageButton(
       "Next",
       `/sub/${page + 1}`,
-      page >= Math.ceil(proxyList.length / PROXY_PER_PAGE) - 1
+      page < Math.floor(proxyList.length / PROXY_PER_PAGE) ? false : true
     );
 
     return document.build(env);
   } catch (error) {
-    return `An error occurred while generating the ${reverse(d("U1NFTEY="))} configurations. ${error}`; // SSELV
+    return `An error occurred while generating the ${reverse("SSELV")} configurations. ${error}`;
   }
 }
 
@@ -619,7 +614,7 @@ export async function mainFetch(request, env, ctx) {
           const filterPort = url.searchParams.get("port")?.split(",") || env.PORTS.split(",");
           const filterVPN = url.searchParams.get("vpn")?.split(",") || env.PROTOCOLS.split(",");
           const filterLimit = parseInt(url.searchParams.get("limit")) || 10;
-          const filterFormat = url.searchParams.get(d("Zm9ybWF0")) || d("cmF3"); // format, raw
+          const filterFormat = url.searchParams.get("format") || "raw";
           const fillerDomain = url.searchParams.get("domain") || APP_DOMAIN;
 
           const proxyBankUrl = url.searchParams.get("proxy-list") || env.PROXY_BANK_URL;
@@ -638,10 +633,10 @@ export async function mainFetch(request, env, ctx) {
           const uuid = crypto.randomUUID();
           const result = [];
           for (const proxy of proxyList) {
-            const uri = new URL(`${reverse(d("bmFqb3J0"))}://${fillerDomain}`); // najort
-            uri.searchParams.set(d("ZW5jcnlwdGlvbg=="), "none"); // encryption
-            uri.searchParams.set(d("dHlwZQ=="), "ws"); // type
-            uri.searchParams.set(d("aG9zdA=="), APP_DOMAIN); // host
+            const uri = new URL(`${reverse("najort")}://${fillerDomain}`);
+            uri.searchParams.set("encryption", "none");
+            uri.searchParams.set("type", "ws");
+            uri.searchParams.set("host", APP_DOMAIN);
 
             for (const port of filterPort) {
               for (const protocol of filterVPN) {
@@ -649,11 +644,11 @@ export async function mainFetch(request, env, ctx) {
 
                 uri.protocol = protocol;
                 uri.port = port.toString();
-                if (protocol == d("c3M=")) { // ss
+                if (protocol == "ss") {
                   uri.username = btoa(`none:${uuid}`);
                   uri.searchParams.set(
-                    d("cGx1Z2lu"), // plugin
-                    `${d("djJyYXktcGx1Z2lu")}${port == 80 ? "" : ";tls"};mux=0;mode=websocket;path=/${proxy.proxyIP}-${ // v2ray-plugin
+                    "plugin",
+                    `v2ray-plugin${port == 80 ? "" : ";tls"};mux=0;mode=websocket;path=/${proxy.proxyIP}-${
                       proxy.proxyPort
                     };host=${APP_DOMAIN}`
                   );
@@ -661,9 +656,9 @@ export async function mainFetch(request, env, ctx) {
                   uri.username = uuid;
                 }
 
-                uri.searchParams.set(d("c2VjdXJpdHk="), port == 443 ? "tls" : "none"); // security
-                uri.searchParams.set(d("c25p"), port == 80 && protocol == reverse(d("c3NlbHY=")) ? "" : APP_DOMAIN); // sni, sselv
-                uri.searchParams.set(d("cGF0aA=="), `/${proxy.proxyIP}-${proxy.proxyPort}`); // path
+                uri.searchParams.set("security", port == 443 ? "tls" : "none");
+                uri.searchParams.set("sni", port == 80 && protocol == reverse("sselv") ? "" : APP_DOMAIN);
+                uri.searchParams.set("path", `/${proxy.proxyIP}-${proxy.proxyPort}`);
 
                 uri.hash = `${result.length + 1} ${getFlagEmoji(proxy.country)} ${proxy.org} WS ${
                   port == 443 ? "TLS" : "NTLS"
@@ -675,15 +670,15 @@ export async function mainFetch(request, env, ctx) {
 
           let finalResult = "";
           switch (filterFormat) {
-            case d("cmF3"): // raw
+            case "raw":
               finalResult = result.join("\n");
               break;
-            case d("djJyYXk="): // v2ray
+            case "v2ray":
               finalResult = btoa(result.join("\n"));
               break;
-            case d("Y2xhc2g="): // clash
-            case d("c2Zh"): // sfa
-            case d("YmZy"): // bfr
+            case "clash":
+            case "sfa":
+            case "bfr":
               const res = await fetch(env.CONVERTER_URL, {
                 method: "POST",
                 body: JSON.stringify({
