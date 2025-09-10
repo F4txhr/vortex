@@ -1,11 +1,11 @@
 import { connect } from 'cloudflare:sockets';
 
-async function checkProxy(proxy) {
+async function checkProxy(proxy, timeout) {
   const [hostname, portStr] = proxy.split(':');
   const port = parseInt(portStr, 10);
 
   const timeoutPromise = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error('Timeout')), 2000) // 2-second timeout
+    setTimeout(() => reject(new Error('Timeout')), timeout)
   );
 
   const connectPromise = (async () => {
@@ -83,7 +83,8 @@ export default {
 
       // Routing based on the path
       if (path === '/health') {
-        const healthCheckPromises = proxies.map(checkProxy);
+        const timeout = parseInt(env.HEALTH_CHECK_TIMEOUT || '5000', 10);
+        const healthCheckPromises = proxies.map(proxy => checkProxy(proxy, timeout));
         const results = await Promise.allSettled(healthCheckPromises);
 
         const healthData = results
