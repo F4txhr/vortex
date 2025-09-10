@@ -1,4 +1,4 @@
-name = "test"
+name = "payung"
 main = "index.js"
 compatibility_date = "2023-09-01"
 compatibility_flags = ["nodejs_compat"]
@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 # Mandatory
 ROOT_DOMAIN = "workers.dev"
-SERVICE_NAME = "tets"
+SERVICE_NAME = "payung"
 API_KEY = ""
 API_EMAIL = ""
 ACCOUNT_ID = ""
