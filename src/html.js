@@ -29,6 +29,7 @@ export class Document {
         const { proxyIP, proxyPort, country, org } = info;
         const allLinksRaw = links.join('\n');
         const allLinksBase64 = btoa(allLinksRaw);
+        const safeAllLinksRaw = JSON.stringify(allLinksRaw);
 
         return `
         <div class="bg-gray-800 rounded-lg shadow-lg p-5 border border-gray-700 hover:border-blue-500 transition-all duration-300">
@@ -41,7 +42,7 @@ export class Document {
             </div>
             <div class="mt-4 pt-4 border-t border-gray-700 flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
                 <button onclick="copyToClipboard(this, '${allLinksBase64}', true)" class="copy-btn w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition-colors duration-300">Copy All (Base64)</button>
-                <button onclick="copyToClipboard(this, \`${allLinksRaw}\`)" class="copy-btn w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded transition-colors duration-300">Copy All (Raw)</button>
+                <button onclick="copyToClipboard(this, ${safeAllLinksRaw})" class="copy-btn w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded transition-colors duration-300">Copy All (Raw)</button>
             </div>
         </div>
     `;
