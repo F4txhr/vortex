@@ -1,7 +1,6 @@
-name = "api-gateway"
+name = "api-aggregator"
 main = "index.js"
-compatibility_date = "2023-09-01"
-compatibility_flags = ["nodejs_compat"]
+compatibility_date = "2024-03-26"
 
 [vars]
-DNS_SERVER_ADDRESS = "8.8.8.8"
+PROXY_LIST_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt"
