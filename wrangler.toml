@@ -2,6 +2,18 @@ name = "api-aggregator"
 main = "index.js"
 compatibility_date = "2024-03-26"
 
+# KV namespace binding for caching health check results.
+# Important: You must create the KV namespace using the wrangler CLI and put the ID here.
+# Command: wrangler kv:namespace create "PROXY_CACHE"
+[[kv_namespaces]]
+binding = "PROXY_CACHE"
+id = "your-kv-namespace-id-here"
+preview_id = "your-kv-namespace-preview-id-here"
+
+# Cron trigger to run the health check every 20 minutes
+[triggers]
+crons = ["*/20 * * * *"]
+
 [vars]
 PROXY_LIST_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt"
 HEALTH_CHECK_TIMEOUT = "5000"

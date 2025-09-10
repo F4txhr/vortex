@@ -31,7 +31,74 @@ async function checkProxy(proxy, timeout) {
   }
 }
 
+async function updateProxyData(proxyData, env) {
+  const { ip, port, country, isp } = proxyData;
+  const proxyAddress = `${ip}:${port}`;
+  const timeout = parseInt(env.HEALTH_CHECK_TIMEOUT || '5000', 10);
+
+  // 1. Perform live health check to get fresh status and latency
+  const healthResult = await checkProxy(proxyAddress, timeout);
+
+  // 2. Combine with enrichment data from the source file
+  const finalData = {
+    proxy: proxyAddress,
+    status: healthResult.status,
+    latency: healthResult.latency,
+    country: country,
+    isp: isp,
+  };
+
+  // 3. Save the combined, fresh data to KV with a 1-hour TTL
+  if (env.PROXY_CACHE) {
+    await env.PROXY_CACHE.put(proxyAddress, JSON.stringify(finalData), { expirationTtl: 3600 });
+  }
+}
+
+// Helper function to fetch and parse the proxy list
+async function getProxyList(env) {
+  const response = await fetch(env.PROXY_LIST_URL);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch proxy list: ${response.status} ${response.statusText}`);
+  }
+  const textData = await response.text();
+  return textData.split('\n')
+    .map(line => {
+      const parts = line.split(',');
+      if (parts.length >= 4) { // Ensure we have all parts: ip, port, country, isp
+        const ip = parts[0].trim();
+        const port = parts[1].trim();
+        const country = parts[2].trim();
+        const isp = parts[3].trim();
+        if (ip && port && country && isp) {
+          return { ip, port, country, isp };
+        }
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+// This function contains the core logic for the scheduled/forced health check.
+async function runHealthChecks(env) {
+  try {
+    const proxies = await getProxyList(env);
+    console.log(`Found ${proxies.length} proxies to check.`);
+
+    const checkPromises = proxies.map(proxyData => updateProxyData(proxyData, env));
+    await Promise.allSettled(checkPromises);
+
+    console.log("Health checks complete.");
+  } catch (error) {
+    console.error("Error during health check run:", error);
+  }
+}
+
 export default {
+  async scheduled(controller, env, ctx) {
+    console.log("Cron trigger running...");
+    ctx.waitUntil(runHealthChecks(env));
+  },
+
   async fetch(request, env, ctx) {
     // Define CORS headers for cross-origin requests
     const corsHeaders = {
@@ -49,63 +116,32 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      // Fetch the proxy list from the URL specified in the environment variables
-      const response = await fetch(env.PROXY_LIST_URL);
-
-      if (!response.ok) {
-        const errorText = `Error fetching proxy list: ${response.status} ${response.statusText}`;
-        console.error(errorText);
-        return new Response(errorText, {
-          status: response.status,
-          headers: { ...corsHeaders },
+      if (request.method === 'POST' && path === '/force-health') {
+        ctx.waitUntil(runHealthChecks(env));
+        return new Response(JSON.stringify({ message: "Forced health check initiated." }), {
+          headers: { 'Content-Type': 'application/json;charset=UTF-8', ...corsHeaders },
         });
-      }
+      } else if (path === '/health') {
+        if (!env.PROXY_CACHE) {
+          return new Response("KV Namespace not configured.", { status: 500, headers: corsHeaders });
+        }
+        const kvList = await env.PROXY_CACHE.list();
+        const promises = kvList.keys.map(key => env.PROXY_CACHE.get(key.name, 'json'));
+        let results = await Promise.all(promises);
 
-      const textData = await response.text();
-      const lines = textData.split('\n');
-
-      // Parse each line to extract the IP and port
-      const proxies = lines
-        .map(line => {
-          const parts = line.split(',');
-          // Ensure the line has at least an IP and a port
-          if (parts.length >= 2) {
-            const ip = parts[0].trim();
-            const port = parts[1].trim();
-            // Basic validation to ensure ip and port are not empty
-            if (ip && port) {
-              return `${ip}:${port}`;
-            }
-          }
-          return null;
-        })
-        .filter(Boolean); // Filter out any null entries from invalid or empty lines
-
-      // Routing based on the path
-      if (path === '/health') {
-        const timeout = parseInt(env.HEALTH_CHECK_TIMEOUT || '5000', 10);
-        const healthCheckPromises = proxies.map(proxy => checkProxy(proxy, timeout));
-        const results = await Promise.allSettled(healthCheckPromises);
-
-        const healthData = results
-          .filter(result => result.status === 'fulfilled')
-          .map(result => result.value)
-          .filter(result => result.status === 'alive') // Keep only alive proxies
+        results = results
+          .filter(result => result && result.status === 'alive') // Filter out nulls and dead proxies
           .sort((a, b) => a.latency - b.latency); // Sort by latency, ascending
 
-        return new Response(JSON.stringify(healthData, null, 2), {
-          headers: {
-            'Content-Type': 'application/json;charset=UTF-8',
-            ...corsHeaders,
-          },
+        return new Response(JSON.stringify(results, null, 2), {
+          headers: { 'Content-Type': 'application/json;charset=UTF-8', ...corsHeaders },
         });
       } else {
         // Default behavior for '/' or any other path: return the full, unchecked list
-        return new Response(JSON.stringify(proxies, null, 2), {
-          headers: {
-            'Content-Type': 'application/json;charset=UTF-8',
-            ...corsHeaders,
-          },
+        const proxies = await getProxyList(env);
+        const proxyStrings = proxies.map(p => `${p.ip}:${p.port}`);
+        return new Response(JSON.stringify(proxyStrings, null, 2), {
+          headers: { 'Content-Type': 'application/json;charset=UTF-8', ...corsHeaders },
         });
       }
 
