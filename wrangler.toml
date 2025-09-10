@@ -1,4 +1,4 @@
-name = "vortex"
+name = "test"
 main = "index.js"
 compatibility_date = "2023-09-01"
 compatibility_flags = ["nodejs_compat"]
@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [vars]
 # Mandatory
 ROOT_DOMAIN = "workers.dev"
-SERVICE_NAME = "vortex"
+SERVICE_NAME = "tets"
 API_KEY = ""
 API_EMAIL = ""
 ACCOUNT_ID = ""
