@@ -80,7 +80,7 @@ async function getProxyList(env) {
 
 // This function contains the core logic for the scheduled/forced health check.
 async function runHealthChecks(env) {
-  const BATCH_SIZE = 35;
+  const BATCH_SIZE = 20; // Reduced from 35 to stay safely under the 50 subrequest limit
   const STATE_KEY = "_internal_state";
 
   try {
