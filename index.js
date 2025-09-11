@@ -80,14 +80,46 @@ async function getProxyList(env) {
 
 // This function contains the core logic for the scheduled/forced health check.
 async function runHealthChecks(env) {
-  try {
-    const proxies = await getProxyList(env);
-    console.log(`Found ${proxies.length} proxies to check.`);
+  const BATCH_SIZE = 35;
+  const STATE_KEY = "_internal_state";
 
-    const checkPromises = proxies.map(proxyData => updateProxyData(proxyData, env));
+  try {
+    // 1. Get the full list of proxies
+    const allProxies = await getProxyList(env);
+    if (allProxies.length === 0) {
+      console.log("Proxy list is empty. Nothing to check.");
+      return;
+    }
+
+    // 2. Get the last checked index from KV
+    const state = await env.PROXY_CACHE.get(STATE_KEY, 'json') || { last_checked_index: 0 };
+    let currentIndex = state.last_checked_index;
+
+    // 3. Determine the batch for this run
+    const batch = allProxies.slice(currentIndex, currentIndex + BATCH_SIZE);
+
+    console.log(`Processing batch of ${batch.length} proxies starting from index ${currentIndex}.`);
+
+    // 4. Distribute tasks among parallel workers
+    const workerId = parseInt(env.WORKER_ID || "0");
+    const totalWorkers = parseInt(env.TOTAL_WORKERS || "1");
+
+    const myTasks = batch.filter((_, index) => (index % totalWorkers) === workerId);
+
+    console.log(`Worker ${workerId}/${totalWorkers} is assigned ${myTasks.length} tasks.`);
+
+    // 5. Execute the health checks for the assigned tasks
+    const checkPromises = myTasks.map(proxyData => updateProxyData(proxyData, env));
     await Promise.allSettled(checkPromises);
 
-    console.log("Health checks complete.");
+    // 6. Update the index for the next run
+    let nextIndex = currentIndex + BATCH_SIZE;
+    if (nextIndex >= allProxies.length) {
+      nextIndex = 0; // Wrap around to the beginning
+    }
+    await env.PROXY_CACHE.put(STATE_KEY, JSON.stringify({ last_checked_index: nextIndex }));
+
+    console.log(`Health checks complete for this batch. Next run will start from index ${nextIndex}.`);
   } catch (error) {
     console.error("Error during health check run:", error);
   }

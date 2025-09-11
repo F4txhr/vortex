@@ -10,10 +10,13 @@ binding = "PROXY_CACHE"
 id = "your-kv-namespace-id-here"
 preview_id = "your-kv-namespace-preview-id-here"
 
-# Cron trigger to run the health check every 20 minutes
+# Cron trigger to run the health check every minute for batch processing
 [triggers]
-crons = ["*/20 * * * *"]
+crons = ["* * * * *"]
 
 [vars]
 PROXY_LIST_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt"
 HEALTH_CHECK_TIMEOUT = "5000"
+# Variables for parallel worker coordination
+TOTAL_WORKERS = "1"
+WORKER_ID = "0"
