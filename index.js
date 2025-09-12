@@ -160,8 +160,20 @@ export default {
         if (!env.PROXY_CACHE) {
           return new Response("KV Namespace not configured.", { status: 500, headers: corsHeaders });
         }
-        const kvList = await env.PROXY_CACHE.list({ limit: 1000 });
-        const promises = kvList.keys.map(key => env.PROXY_CACHE.get(key.name, 'json'));
+
+        // Use a loop with a cursor to fetch all keys, overcoming the 1000-key limit.
+        const allKeys = [];
+        let cursor = undefined;
+        do {
+          const listResult = await env.PROXY_CACHE.list({ cursor: cursor, limit: 1000 });
+          allKeys.push(...listResult.keys);
+          cursor = listResult.cursor;
+        } while (!listResult.list_complete);
+
+        // Filter out the internal state key before fetching values
+        const proxyKeys = allKeys.filter(key => key.name !== '_internal_state');
+
+        const promises = proxyKeys.map(key => env.PROXY_CACHE.get(key.name, 'json'));
         let results = await Promise.all(promises);
 
         results = results
