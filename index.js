@@ -97,7 +97,14 @@ export class HealthCheckerDO {
       isp: proxyData.isp,
     };
 
-    await this.env.PROXY_CACHE.put(proxyAddress, JSON.stringify(finalData), { expirationTtl: 3600 });
+    // Use the proxy address as the key for the health check result
+    if (healthResult.status === 'alive') {
+        await this.env.PROXY_CACHE.put(proxyAddress, JSON.stringify(finalData), { expirationTtl: 3600 });
+    } else {
+        // Optionally, delete dead proxies from the cache
+        await this.env.PROXY_CACHE.delete(proxyAddress);
+    }
+
 
     currentIndex++;
     await this.state.storage.put("current_index", currentIndex);
@@ -159,7 +166,8 @@ export default {
           cursor = listResult.cursor;
         } while (listResult && !listResult.list_complete);
 
-        const proxyKeys = allKeys.filter(key => !key.name.startsWith('_internal_'));
+        // Filter out any internal state keys before fetching values
+        const proxyKeys = allKeys.filter(key => !key.name.startsWith('_'));
         const promises = proxyKeys.map(key => env.PROXY_CACHE.get(key.name, 'json'));
         let results = await Promise.all(promises);
 
