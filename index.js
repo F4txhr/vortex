@@ -31,6 +31,40 @@ async function checkProxy(proxy, timeout) {
   }
 }
 
+// --- Helper: Gets enrichment data for an IP, using a permanent cache ---
+async function getEnrichmentData(ip, env) {
+  if (!env.GEOIP_CACHE) {
+    return { country: "N/A", isp: "N/A" };
+  }
+
+  // Check cache first
+  const cached = await env.GEOIP_CACHE.get(ip, 'json');
+  if (cached) {
+    return cached;
+  }
+
+  // If not in cache, fetch from external API
+  try {
+    const response = await fetch(`http://ip-api.com/json/${ip}?fields=countryCode,isp`);
+    if (!response.ok) {
+      return { country: "N/A", isp: "N/A" };
+    }
+    const data = await response.json();
+    const enrichmentData = {
+      country: data.countryCode || "N/A",
+      isp: data.isp || "N/A",
+    };
+
+    // Store in cache permanently
+    await env.GEOIP_CACHE.put(ip, JSON.stringify(enrichmentData));
+
+    return enrichmentData;
+  } catch (e) {
+    console.error(`GeoIP lookup failed for ${ip}:`, e);
+    return { country: "N/A", isp: "N/A" };
+  }
+}
+
 // --- Helper: Fetches and parses the list of proxies from the source URL ---
 async function getProxyList(env) {
   const response = await fetch(env.PROXY_LIST_URL);
@@ -41,14 +75,11 @@ async function getProxyList(env) {
   return textData.split('\n')
     .map(line => {
       const parts = line.split(',');
-      if (parts.length >= 4) {
-        const ip = parts[0].trim();
-        const port = parts[1].trim();
-        const country = parts[2].trim();
-        const isp = parts[3].trim();
-        if (ip && port && country && isp) {
-          return { ip, port, country, isp };
-        }
+      const ip = parts[0]?.trim();
+      const port = parts[1]?.trim();
+      if (ip && port) {
+        // Return a simple ip:port string. Enrichment is handled later.
+        return `${ip}:${port}`;
       }
       return null;
     })
@@ -82,33 +113,36 @@ export class HealthCheckerDO {
       return;
     }
 
-    const proxyData = proxies[currentIndex];
-    const proxyAddress = `${proxyData.ip}:${proxyData.port}`;
+    const proxyAddress = proxies[currentIndex];
+    const ip = proxyAddress.split(":")[0];
     console.log(`DO Alarm: Checking proxy #${currentIndex}: ${proxyAddress}`);
 
+    // 1. Get enrichment data (from cache or external API)
+    const enrichmentData = await getEnrichmentData(ip, this.env);
+
+    // 2. Perform health check
     const timeout = parseInt(this.env.HEALTH_CHECK_TIMEOUT || '5000', 10);
     const healthResult = await checkProxy(proxyAddress, timeout);
 
+    // 3. Combine all data
     const finalData = {
       proxy: proxyAddress,
       status: healthResult.status,
       latency: healthResult.latency,
-      country: proxyData.country,
-      isp: proxyData.isp,
+      ...enrichmentData,
     };
 
-    // Use the proxy address as the key for the health check result
+    // 4. Save to health check cache
     if (healthResult.status === 'alive') {
         await this.env.PROXY_CACHE.put(proxyAddress, JSON.stringify(finalData), { expirationTtl: 3600 });
     } else {
-        // Optionally, delete dead proxies from the cache
         await this.env.PROXY_CACHE.delete(proxyAddress);
     }
 
-
+    // 5. Increment index and set next alarm
     currentIndex++;
     await this.state.storage.put("current_index", currentIndex);
-    this.state.storage.setAlarm(Date.now() + 1000); // Check next proxy in 1 second
+    this.state.storage.setAlarm(Date.now() + 1000);
   }
 
   // This method is called via the DO's fetch handler.
@@ -129,6 +163,34 @@ export class HealthCheckerDO {
   }
 }
 
+// Helper function for the /seed endpoint to process a proxy in real-time
+async function processProxyRealtime(proxyAddress, env) {
+  const ip = proxyAddress.split(":")[0];
+  const timeout = parseInt(env.HEALTH_CHECK_TIMEOUT || '5000', 10);
+
+  // Perform both checks concurrently
+  const healthPromise = checkProxy(proxyAddress, timeout);
+  const enrichmentPromise = getEnrichmentData(ip, env);
+
+  const [healthResult, enrichmentData] = await Promise.all([healthPromise, enrichmentPromise]);
+
+  const finalData = {
+    proxy: proxyAddress,
+    status: healthResult.status,
+    latency: healthResult.latency,
+    ...enrichmentData,
+  };
+
+  // Update the cache in the background
+  if (healthResult.status === 'alive' && env.PROXY_CACHE) {
+    // We can't use ctx.waitUntil here, so this is a fire-and-forget write.
+    // For a seeder, this is acceptable.
+    env.PROXY_CACHE.put(proxyAddress, JSON.stringify(finalData), { expirationTtl: 3600 });
+  }
+
+  return finalData;
+}
+
 // --- Main Worker Logic ---
 export default {
   async fetch(request, env, ctx) {
@@ -146,7 +208,24 @@ export default {
       const url = new URL(request.url);
       const path = url.pathname;
 
-      if (request.method === 'POST' && path === '/force-health') {
+      if (request.method === 'POST' && path === '/seed') {
+        const proxies = await getProxyList(env);
+        const batch = proxies.slice(0, 40); // Take the first 40
+
+        const promises = batch.map(proxy => processProxyRealtime(proxy, env));
+        const results = await Promise.allSettled(promises);
+
+        const responseData = results
+            .filter(r => r.status === 'fulfilled')
+            .map(r => r.value)
+            .filter(p => p.status === 'alive')
+            .sort((a,b) => a.latency - b.latency);
+
+        return new Response(JSON.stringify(responseData, null, 2), {
+          headers: { 'Content-Type': 'application/json;charset=UTF-8', ...corsHeaders },
+        });
+
+      } else if (request.method === 'POST' && path === '/force-health') {
         const id = env.HEALTH_CHECKER.idFromName("singleton-health-checker");
         const stub = env.HEALTH_CHECKER.get(id);
         // Send a request to the DO's fetch handler to trigger the process.
@@ -181,8 +260,7 @@ export default {
       } else {
         // Default behavior: return the raw, unchecked list.
         const proxies = await getProxyList(env);
-        const proxyStrings = proxies.map(p => `${p.ip}:${p.port}`);
-        return new Response(JSON.stringify(proxyStrings, null, 2), {
+        return new Response(JSON.stringify(proxies, null, 2), {
           headers: { 'Content-Type': 'application/json;charset=UTF-8', ...corsHeaders },
         });
       }

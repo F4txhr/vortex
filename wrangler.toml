@@ -13,11 +13,17 @@ bindings = [
 tag = "v1"
 new_sqlite_classes = ["HealthCheckerDO"]
 
-# KV namespace for caching the results
+# KV namespace for caching the temporary health check results
 [[kv_namespaces]]
 binding = "PROXY_CACHE"
 id = "your-kv-namespace-id-here" # IMPORTANT: The user must fill this in
 preview_id = "your-kv-namespace-preview-id-here" # IMPORTANT: The user must fill this in
+
+# KV namespace for permanent GeoIP/ISP data
+[[kv_namespaces]]
+binding = "GEOIP_CACHE"
+id = "your-geoip-kv-id-here" # IMPORTANT: The user must create and fill this in
+preview_id = "your-geoip-kv-preview-id-here" # IMPORTANT: The user must create and fill this in
 
 [vars]
 PROXY_LIST_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt"
