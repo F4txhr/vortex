@@ -2,37 +2,31 @@ name = "api-aggregator"
 main = "index.js"
 compatibility_date = "2024-03-26"
 
-# Binding for the Durable Object that manages health checks
+# Binding for the Durable Object that acts as a queue manager
 [durable_objects]
 bindings = [
   { name = "HEALTH_CHECKER", class_name = "HealthCheckerDO" }
 ]
 
-# Migration for the new Durable Object class. Required for first deployment.
+# Migration for the new Durable Object class
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["HealthCheckerDO"]
 
-# KV namespace for caching the temporary health check results
+# KV namespace for the final, cached report
 [[kv_namespaces]]
 binding = "PROXY_CACHE"
-id = "your-kv-namespace-id-here" # IMPORTANT: The user must fill this in
-preview_id = "your-kv-namespace-preview-id-here" # IMPORTANT: The user must fill this in
+id = "your-proxy-cache-id-here"
 
-# KV namespace for permanent GeoIP/ISP data
+# KV namespace for permanent GeoIP data
 [[kv_namespaces]]
 binding = "GEOIP_CACHE"
-id = "your-geoip-kv-id-here" # IMPORTANT: The user must create and fill this in
-preview_id = "your-geoip-kv-preview-id-here" # IMPORTANT: The user must create and fill this in
+id = "your-geoip-kv-id-here"
 
+# Cron trigger to activate the worker pool every minute
 [triggers]
-# Trigger all workers every minute to act as a worker pool
 crons = ["* * * * *"]
 
 [vars]
 PROXY_LIST_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt"
 HEALTH_CHECK_TIMEOUT = "5000"
-# Variables for the worker pool.
-# Deploy multiple workers, each with a unique WORKER_ID from 0 to TOTAL_WORKERS - 1.
-TOTAL_WORKERS = "1"
-WORKER_ID = "0"
