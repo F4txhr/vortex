@@ -1,33 +1,4 @@
-name = "api-aggregator"
+name = "socket-test"
 main = "index.js"
-compatibility_date = "2024-03-26"
+compatibility_date = "2024-05-01"
 compatibility_flags = ["sockets"]
-
-# Binding for the Durable Object that acts as a queue manager
-[durable_objects]
-bindings = [
-  { name = "HEALTH_CHECKER", class_name = "HealthCheckerDO" }
-]
-
-# Migration for the new Durable Object class. This is required for deployment.
-[[migrations]]
-tag = "v1"
-new_sqlite_classes = ["HealthCheckerDO"]
-
-# A single KV namespace for all caching needs (final report and GeoIP data).
-[[kv_namespaces]]
-binding = "PROXY_CACHE"
-id = "your-proxy-cache-id-here"
-
-[vars]
-PROXY_LIST_URL = "https://raw.githubusercontent.com/FoolVPN-ID/Nautica/refs/heads/main/proxyList.txt"
-HEALTH_CHECK_TIMEOUT = "5000"
-
-# =====================================================================================
-# IMPORTANT: V2RAY CONFIGURATION
-# You MUST replace the placeholder values below with your actual V2Ray server details
-# for the subscription link to work correctly.
-# =====================================================================================
-VMESS_UUID = "your-uuid-here"
-VMESS_WEBSOCKET_HOST = "your-websocket-host.com"
-VMESS_WEBSOCKET_PATH = "/your-websocket-path"
