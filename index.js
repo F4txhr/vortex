@@ -1,29 +1,74 @@
-import { connect } from 'cloudflare:sockets';
+/**
+ * Checks a proxy's health by attempting an HTTP CONNECT request.
+ * @param {string} proxyAddress - The proxy address in "ip:port" format.
+ * @param {number} timeout - Timeout in milliseconds.
+ * @returns {Promise<object>} - A promise that resolves to a result object.
+ */
+async function checkProxyHTTP(proxyAddress, timeout = 5000) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    const startTime = Date.now();
+    try {
+        // We are attempting to establish a tunnel to a reliable host through the proxy.
+        // This is a standard way to check if an HTTP proxy is functional.
+        const response = await fetch(`http://${proxyAddress}`, {
+            method: 'CONNECT',
+            headers: {
+                // The Host header specifies the target endpoint we want the proxy to connect to.
+                'Host': 'www.cloudflare.com:443'
+            },
+            signal: controller.signal,
+        });
+
+        const latency = Date.now() - startTime;
+
+        // A successful CONNECT request typically returns a 2xx status code.
+        if (response.status >= 200 && response.status < 300) {
+            return {
+                proxy: proxyAddress,
+                status: "alive",
+                http_status: response.status,
+                latency: latency,
+                check_method: "HTTP_CONNECT"
+            };
+        } else {
+            return {
+                proxy: proxyAddress,
+                status: "dead",
+                http_status: response.status,
+                error: `Received non-2xx status: ${response.statusText}`,
+                latency: latency,
+                check_method: "HTTP_CONNECT"
+            };
+        }
+    } catch (e) {
+        // Errors are often timeouts or connection refusals.
+        return {
+            proxy: proxyAddress,
+            status: "dead",
+            http_status: null,
+            error: e.message,
+            latency: Date.now() - startTime,
+            check_method: "HTTP_CONNECT"
+        };
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 
 export default {
     async fetch(request, env, ctx) {
-        try {
-            // We will try to connect to a known, reliable address.
-            // 1.1.1.1 is Cloudflare's public DNS resolver, and port 53 is for DNS.
-            // This is a good target for a simple TCP connection test.
-            const socket = connect({ hostname: '1.1.1.1', port: 53 });
+        // The proxy provided by the user for the test.
+        const testProxy = "152.32.181.246:44070";
 
-            // If the connection is successful, we just close it.
-            await socket.close();
+        console.log(`Testing proxy: ${testProxy}`);
+        const result = await checkProxyHTTP(testProxy);
+        console.log("Test result:", result);
 
-            // If we reach here, it means the `connect` API is available and worked.
-            return new Response("Experiment SUCCESS: The 'sockets' API is available in this environment.", {
-                status: 200,
-            });
-
-        } catch (e) {
-            // If we are here, it means the `connect` call failed for some reason.
-            // This could be a network error, or because the API is not truly available.
-            // The error message `e.message` will be very informative.
-            console.error(e);
-            return new Response(`Experiment FAILED: The 'sockets' API call failed with the error: ${e.message}`, {
-                status: 500,
-            });
-        }
+        return new Response(JSON.stringify(result, null, 2), {
+            headers: { 'Content-Type': 'application/json' },
+        });
     },
 };
